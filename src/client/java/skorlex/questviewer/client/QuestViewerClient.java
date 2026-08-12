@@ -221,15 +221,15 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("§e - /q weekly [game] {ign} §7- Your weekly quests for specified game"));
 		client.player.sendSystemMessage(Component.literal("§e - /q leaderboard [1-10] §7- View the top 100 quests completed"));
 		client.player.sendSystemMessage(Component.literal("§e - /q stats §7- View your general Hypixel stats (- /q stats [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e - /q site §7- Link to notifly.zone (- /q site [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e - /q site §7- Link to shmeado.club (- /q site [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e - /q games §7- Lists gamemode aliases"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 	}
 
 	private void printSite(Minecraft client, String ign) {
-		String url = "https://notifly.zone/quests/" + ign;
+		String url = "https://shmeado.club/player/stats/" + ign;
 
-		MutableComponent linkComponent = Component.literal("notifly.zone")
+		MutableComponent linkComponent = Component.literal("shmeado.club")
 				.withStyle(style -> style
 						.withColor(ChatFormatting.AQUA)
 						.withClickEvent(new ClickEvent.OpenUrl(URI.create(url)))
@@ -249,7 +249,7 @@ public class QuestViewerClient implements ClientModInitializer {
 		CompletableFuture.runAsync(() -> {
 			try {
 				HttpRequest request = HttpRequest.newBuilder()
-						.uri(URI.create("https://notifly.zone/api/misc/gameAliases/"))
+						.uri(URI.create("https://questviewer-proxy.alexiscanovi78.workers.dev/api/misc/gameAliases/"))
 						.header("content-type", "application/json")
 						.GET()
 						.build();
@@ -486,7 +486,7 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void fetchData(Minecraft client, String ign, String game, boolean weekly) {
 		CompletableFuture.runAsync(() -> {
 			try {
-				String url = "https://notifly.zone/api/quests/player_simple/" + ign + "?type=" + (weekly ? "weekly" : "daily") + "&game=" + game;
+				String url = "https://questviewer-proxy.alexiscanovi78.workers.dev/api/quests/player_simple/" + ign + "?type=" + (weekly ? "weekly" : "daily") + "&game=" + game;
 				HttpRequest request = HttpRequest.newBuilder()
 						.uri(URI.create(url))
 						.header("content-type", "application/json")
@@ -510,11 +510,18 @@ public class QuestViewerClient implements ClientModInitializer {
 
 						Map.Entry<String, JsonElement> gameKeyValue = typeObject.entrySet().iterator().next();
 						JsonObject questObject = gameKeyValue.getValue().getAsJsonObject();
+						String gameName = questObject.get("name").getAsString();
+						JsonArray questList = questObject.get("quests").getAsJsonArray();
+
+						// Handle gamemodes that have no active quests (e.g. Housing, SkyBlock, SMP)
+						if (questList.isEmpty()) {
+							client.player.sendSystemMessage(Component.literal("§c" + gameName + " doesn't have any quests!"));
+							return;
+						}
 
 						client.player.sendSystemMessage(Component.literal("§m-------------------"));
-						client.player.sendSystemMessage(Component.literal("\n §l" + questObject.get("name").getAsString() + "\n " + (weekly ? "Weekly" : "Daily") + " Quests\n"));
+						client.player.sendSystemMessage(Component.literal("\n §l" + gameName + "\n " + (weekly ? "Weekly" : "Daily") + " Quests\n"));
 
-						JsonArray questList = questObject.get("quests").getAsJsonArray();
 						for (JsonElement quest : questList) {
 							JsonObject questObj = quest.getAsJsonObject();
 							JsonObject statusObject = questObj.get("status").getAsJsonObject();
@@ -554,7 +561,7 @@ public class QuestViewerClient implements ClientModInitializer {
 						client.player.sendSystemMessage(Component.literal("§cError: Could not display quests"));
 					}
 				});
-				QuestViewer.LOGGER.error("Failed to fetch quests from notifly.zone", e);
+				QuestViewer.LOGGER.error("Failed to fetch quests from Cloudflare Proxy", e);
 			}
 		});
 	}
