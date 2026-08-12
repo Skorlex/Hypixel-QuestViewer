@@ -513,6 +513,25 @@ public class QuestViewerClient implements ClientModInitializer {
 						String gameName = questObject.get("name").getAsString();
 						JsonArray questList = questObject.get("quests").getAsJsonArray();
 
+						// --- LEGACY LOBBY MENU ---
+						if (gameName.equalsIgnoreCase("Classic Games") || gameName.equalsIgnoreCase("Legacy")) {
+							client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+							client.player.sendSystemMessage(Component.literal("§eWhich game's " + (weekly ? "weekly" : "daily") + " quests would you like to view?"));
+							client.player.sendSystemMessage(Component.literal(""));
+
+							String cmdType = weekly ? "w" : "d";
+							sendClickableGame(client, "Arena Brawl", "/q " + cmdType + " arena " + ign);
+							sendClickableGame(client, "VampireZ", "/q " + cmdType + " vz " + ign);
+							sendClickableGame(client, "Turbo Kart Racers", "/q " + cmdType + " tkr " + ign);
+							sendClickableGame(client, "Quakecraft", "/q " + cmdType + " quake " + ign);
+							sendClickableGame(client, "The Walls", "/q " + cmdType + " walls " + ign);
+							sendClickableGame(client, "Paintball", "/q " + cmdType + " paintball " + ign);
+
+							client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+							return;
+						}
+						// -------------------------
+
 						// Handle gamemodes that have no active quests (e.g. Housing, SkyBlock, SMP)
 						if (questList.isEmpty()) {
 							client.player.sendSystemMessage(Component.literal("§c" + gameName + " doesn't have any quests!"));
@@ -564,5 +583,14 @@ public class QuestViewerClient implements ClientModInitializer {
 				QuestViewer.LOGGER.error("Failed to fetch quests from Cloudflare Proxy", e);
 			}
 		});
+	}
+
+	private void sendClickableGame(Minecraft client, String name, String command) {
+		MutableComponent comp = Component.literal(" §7- §b§l" + name)
+				.withStyle(style -> style
+						.withClickEvent(new ClickEvent.RunCommand(command))
+						.withHoverEvent(new HoverEvent.ShowText(Component.literal("§eClick to view " + name + " quests")))
+				);
+		client.player.sendSystemMessage(comp);
 	}
 }
