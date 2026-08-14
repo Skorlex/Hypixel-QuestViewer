@@ -54,8 +54,8 @@ public class QuestViewerClient implements ClientModInitializer {
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (checkQuestsKey.consumeClick()) {
 				if (client.player != null) {
-					String selfUuidOrName = client.player.getUUID().toString().replace("-", "");
-					fetchData(client, selfUuidOrName, "current", false);
+					String selfName = client.player.getName().getString();
+					fetchData(client, selfName, "current", false);
 				}
 			}
 		});
@@ -71,7 +71,8 @@ public class QuestViewerClient implements ClientModInitializer {
 								})
 								.then(ClientCommands.argument("action", StringArgumentType.word())
 										.suggests((context, builder) -> {
-											String[] suggestions = {"daily", "weekly", "leaderboard", "stats", "site", "games", "help"};
+											// Easter egg and alias left out of suggestions to keep it clean!
+											String[] suggestions = {"daily", "weekly", "leaderboard", "stats", "summary", "site", "games", "help"};
 											String remaining = builder.getRemaining().toLowerCase();
 											for (String suggestion : suggestions) {
 												if (suggestion.startsWith(remaining)) {
@@ -111,7 +112,8 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void processArgs(Minecraft client, String[] args) {
 		client.execute(() -> {
 			if (client.player == null) return;
-			String selfUuidOrName = client.player.getUUID().toString().replace("-", "");
+
+			String selfName = client.player.getName().getString();
 
 			if (args.length == 0) {
 				printHelp(client);
@@ -133,19 +135,27 @@ public class QuestViewerClient implements ClientModInitializer {
 					case "info":
 					case "i":
 					case "stats":
-						fetchStats(client, selfUuidOrName);
+						fetchStats(client, selfName);
+						break;
+					case "sum":
+					case "summary":
+						fetchSummary(client, selfName);
 						break;
 					case "weekly":
 					case "w":
-						fetchData(client, selfUuidOrName, "current", true);
+						fetchData(client, selfName, "current", true);
 						break;
 					case "daily":
 					case "d":
-						fetchData(client, selfUuidOrName, "current", false);
+						fetchData(client, selfName, "current", false);
 						break;
 					case "site":
 					case "s":
-						printSite(client, selfUuidOrName);
+						printSite(client, selfName);
+						break;
+					case "summer_albert":
+					case "bert":
+						printAlbert(client);
 						break;
 					default:
 						client.player.sendSystemMessage(Component.literal("§cError: Could not register argument: " + args[0]));
@@ -159,7 +169,6 @@ public class QuestViewerClient implements ClientModInitializer {
 						try {
 							page = Integer.parseInt(args[1]);
 						} catch (NumberFormatException e) {
-							// Defaults to page 1 if they type something like "/q leaderboard abc"
 						}
 
 						if (page > 10) {
@@ -180,13 +189,17 @@ public class QuestViewerClient implements ClientModInitializer {
 					case "stats":
 						fetchStats(client, args[1]);
 						break;
+					case "sum":
+					case "summary":
+						fetchSummary(client, args[1]);
+						break;
 					case "weekly":
 					case "w":
-						fetchData(client, selfUuidOrName, args[1], true);
+						fetchData(client, selfName, args[1], true);
 						break;
 					case "daily":
 					case "d":
-						fetchData(client, selfUuidOrName, args[1], false);
+						fetchData(client, selfName, args[1], false);
 						break;
 					default:
 						client.player.sendSystemMessage(Component.literal("§cCould not register argument: " + args[0]));
@@ -213,30 +226,82 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void printHelp(Minecraft client) {
 		client.player.sendSystemMessage(Component.literal(""));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
-		client.player.sendSystemMessage(Component.literal("§l   HELP§r and §lCOMMANDS"));
+		client.player.sendSystemMessage(Component.literal("§lHelp and Commands"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
-		client.player.sendSystemMessage(Component.literal("§e - /q daily §7- Your daily quests for game you are playing"));
-		client.player.sendSystemMessage(Component.literal("§e - /q weekly §7- Your weekly quests for game you are playing"));
-		client.player.sendSystemMessage(Component.literal("§e - /q daily [game] {ign} §7- Your daily quests for specified game"));
-		client.player.sendSystemMessage(Component.literal("§e - /q weekly [game] {ign} §7- Your weekly quests for specified game"));
-		client.player.sendSystemMessage(Component.literal("§e - /q leaderboard [1-10] §7- View the top 100 quests completed"));
-		client.player.sendSystemMessage(Component.literal("§e - /q stats §7- View your general Hypixel stats (- /q stats [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e - /q site §7- Link to shmeado.club (- /q site [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e - /q games §7- Lists gamemode aliases"));
+		client.player.sendSystemMessage(Component.literal("§e/q daily §7- Your daily quests for game you are playing"));
+		client.player.sendSystemMessage(Component.literal("§e/q weekly §7- Your weekly quests for game you are playing"));
+		client.player.sendSystemMessage(Component.literal("§e/q daily [game] {ign} §7- Your daily quests for specified game"));
+		client.player.sendSystemMessage(Component.literal("§e/q weekly [game] {ign} §7- Your weekly quests for specified game"));
+		client.player.sendSystemMessage(Component.literal("§e/q summary §7- View quests completed summary (- /q sum [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed"));
+		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q stats [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page (- /q site [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q games §7- Lists gamemode aliases"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 	}
 
 	private void printSite(Minecraft client, String ign) {
-		String url = "https://shmeado.club/player/stats/" + ign;
+		CompletableFuture.runAsync(() -> {
+			try {
+				HttpRequest request = HttpRequest.newBuilder()
+						.uri(URI.create("https://playerdb.co/api/player/minecraft/" + ign))
+						.header("User-Agent", "QuestViewer")
+						.GET()
+						.build();
 
-		MutableComponent linkComponent = Component.literal("shmeado.club")
+				HttpResponse<String> result = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+				JsonObject data = JsonParser.parseString(result.body()).getAsJsonObject();
+
+				client.execute(() -> {
+					if (client.player == null) return;
+
+					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
+						// Pulls the raw UUID directly from PlayerDB to use for the link
+						String uuid = data.getAsJsonObject("data").getAsJsonObject("player").get("raw_id").getAsString();
+						String url = "https://25karma.xyz/quests/" + uuid;
+
+						MutableComponent linkComponent = Component.literal("25Karma")
+								.withStyle(style -> style
+										.withColor(ChatFormatting.LIGHT_PURPLE)
+										.withBold(true)
+										.withClickEvent(new ClickEvent.OpenUrl(URI.create(url)))
+										.withHoverEvent(new HoverEvent.ShowText(Component.literal(url)))
+								);
+
+						MutableComponent message = Component.literal("Go to ").append(linkComponent);
+
+						client.player.sendSystemMessage(Component.literal("§m-------------------"));
+						client.player.sendSystemMessage(Component.literal(""));
+						client.player.sendSystemMessage(message);
+						client.player.sendSystemMessage(Component.literal(""));
+						client.player.sendSystemMessage(Component.literal("§m-------------------"));
+					} else {
+						client.player.sendSystemMessage(Component.literal("§cError: Could not find player UUID."));
+					}
+				});
+			} catch (Exception e) {
+				client.execute(() -> {
+					if (client.player != null) {
+						client.player.sendSystemMessage(Component.literal("§cError connecting to PlayerDB."));
+					}
+				});
+				QuestViewer.LOGGER.error("Failed to fetch UUID for 25Karma link", e);
+			}
+		});
+	}
+
+	private void printAlbert(Minecraft client) {
+		String url = "https://sites.google.com/view/summeralbert/home";
+
+		MutableComponent linkComponent = Component.literal("Albert's Achives")
 				.withStyle(style -> style
 						.withColor(ChatFormatting.AQUA)
+						.withBold(true)
 						.withClickEvent(new ClickEvent.OpenUrl(URI.create(url)))
 						.withHoverEvent(new HoverEvent.ShowText(Component.literal(url)))
 				);
 
-		MutableComponent message = Component.literal(" Go to ").append(linkComponent);
+		MutableComponent message = Component.literal("Go to ").append(linkComponent);
 
 		client.player.sendSystemMessage(Component.literal("§m-------------------"));
 		client.player.sendSystemMessage(Component.literal(""));
@@ -260,7 +325,7 @@ public class QuestViewerClient implements ClientModInitializer {
 					if (client.player == null) return;
 					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
-						client.player.sendSystemMessage(Component.literal("§l     GAME ALIASES"));
+						client.player.sendSystemMessage(Component.literal("§lGame Aliases"));
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 						JsonArray array = data.get("data").getAsJsonArray();
 						for (JsonElement game : array) {
@@ -273,7 +338,7 @@ public class QuestViewerClient implements ClientModInitializer {
 								aliasList.append(aliases.get(i).getAsString());
 							}
 							client.player.sendSystemMessage(Component.literal("§f" + name));
-							client.player.sendSystemMessage(Component.literal("§7 - " + aliasList));
+							client.player.sendSystemMessage(Component.literal("§7- " + aliasList));
 						}
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 					} else if (data != null && data.has("cause")) {
@@ -309,7 +374,7 @@ public class QuestViewerClient implements ClientModInitializer {
 
 					client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 
-					MutableComponent header = Component.literal("    ");
+					MutableComponent header = Component.literal("");
 
 					if (page > 1) {
 						header.append(Component.literal("§b§l<< ")
@@ -320,7 +385,7 @@ public class QuestViewerClient implements ClientModInitializer {
 						);
 					}
 
-					header.append(Component.literal("§f§lTOP " + (page * 10) + " QUESTS COMPLETED"));
+					header.append(Component.literal("§f§lTop " + (page * 10) + " Quests Completed"));
 
 					if (page < 10) {
 						header.append(Component.literal(" §b§l>>")
@@ -426,61 +491,120 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void fetchStats(Minecraft client, String name) {
 		CompletableFuture.runAsync(() -> {
 			try {
+				String url = "https://questviewer-proxy.alexiscanovi78.workers.dev/api/stats/" + name;
 				HttpRequest request = HttpRequest.newBuilder()
-						.uri(URI.create("https://shmeado.club/player/stats/" + name + "/"))
-						.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+						.uri(URI.create(url))
+						.header("content-type", "application/json")
 						.GET()
 						.build();
 
 				HttpResponse<String> result = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
-				String html = result.body();
-
-				String cleanText = html.replaceAll("<[^>]+>", " ").replace("&nbsp;", " ");
+				JsonObject data = JsonParser.parseString(result.body()).getAsJsonObject();
 
 				client.execute(() -> {
 					if (client.player == null) return;
 
-					if (cleanText.contains("Invalid Name/UUID")) {
-						client.player.sendSystemMessage(Component.literal("§cError: Player not found on shmeado.club"));
-						return;
+					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
+						JsonObject payload = data.getAsJsonObject("data");
+
+						String rankFormatted = payload.get("rankFormatted").getAsString();
+						double level = payload.get("level").getAsDouble();
+						int ap = payload.get("achievementPoints").getAsInt();
+						int quests = payload.get("quests").getAsInt();
+						int challenges = payload.get("challenges").getAsInt();
+						int karma = payload.get("karma").getAsInt();
+
+						String grammarSuffix = rankFormatted.toLowerCase().endsWith("s") ? "'" : "'s";
+
+						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+						client.player.sendSystemMessage(Component.literal(rankFormatted + grammarSuffix + " §f§lGeneral Stats"));
+						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+
+						client.player.sendSystemMessage(Component.literal("§7Network Level: §3" + String.format("%.2f", level)));
+						client.player.sendSystemMessage(Component.literal("§7Achievement Points: §e" + String.format("%,d", ap)));
+						client.player.sendSystemMessage(Component.literal("§7Quests Completed: §b" + String.format("%,d", quests)));
+						client.player.sendSystemMessage(Component.literal("§7Challenges Completed: §b" + String.format("%,d", challenges)));
+						client.player.sendSystemMessage(Component.literal("§7Karma: §d" + String.format("%,d", karma)));
+
+						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+
+					} else if (data != null && data.has("cause")) {
+						client.player.sendSystemMessage(Component.literal("§cError: " + data.get("cause").getAsString()));
+					} else {
+						client.player.sendSystemMessage(Component.literal("§cError: Could not display stats"));
 					}
-
-					client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
-					client.player.sendSystemMessage(Component.literal("§l    " + name.toUpperCase() + "'S GENERAL STATS"));
-					client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
-
-					String level = extractStat(cleanText, "Level:\\s*([\\d,.]+)");
-					String quests = extractStat(cleanText, "Quests:\\s*([\\d,]+)");
-					String challenges = extractStat(cleanText, "Challenges:\\s*([\\d,]+)");
-					String achievementPoints = extractStat(cleanText, "Achievement Points:\\s*([\\d,]+)");
-					String karma = extractStat(cleanText, "Karma:\\s*([\\d,]+)");
-
-					client.player.sendSystemMessage(Component.literal("§7 Network Level: §3" + (level != null ? level : "N/A")));
-					client.player.sendSystemMessage(Component.literal("§7 Achievement Points: §e" + (achievementPoints != null ? achievementPoints : "N/A")));
-					client.player.sendSystemMessage(Component.literal("§7 Quests Completed: §6" + (quests != null ? quests : "N/A")));
-					client.player.sendSystemMessage(Component.literal("§7 Challenges Completed: §6" + (challenges != null ? challenges : "N/A")));
-					client.player.sendSystemMessage(Component.literal("§7 Karma: §d" + (karma != null ? karma : "N/A")));
-
-					client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 				});
 			} catch (Exception e) {
 				client.execute(() -> {
 					if (client.player != null) {
-						client.player.sendSystemMessage(Component.literal("§cError fetching stats from shmeado.club"));
+						client.player.sendSystemMessage(Component.literal("§cError: Could not fetch stats from proxy."));
 					}
 				});
-				QuestViewer.LOGGER.error("Failed to fetch stats from shmeado.club", e);
+				QuestViewer.LOGGER.error("Failed to fetch stats from Cloudflare Proxy", e);
 			}
 		});
 	}
 
-	private String extractStat(String text, String regex) {
-		Pattern pattern = Pattern.compile(regex);
-		Matcher matcher = pattern.matcher(text);
-		if (matcher.find()) {
-			return matcher.group(1);
-		}
-		return null;
+	private void fetchSummary(Minecraft client, String ign) {
+		CompletableFuture.runAsync(() -> {
+			try {
+				String url = "https://questviewer-proxy.alexiscanovi78.workers.dev/api/quests/summary/" + ign;
+				HttpRequest request = HttpRequest.newBuilder()
+						.uri(URI.create(url))
+						.header("content-type", "application/json")
+						.GET()
+						.build();
+
+				HttpResponse<String> result = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+				JsonObject data = JsonParser.parseString(result.body()).getAsJsonObject();
+
+				client.execute(() -> {
+					if (client.player == null) return;
+
+					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
+						JsonObject payload = data.getAsJsonObject("data");
+						String player = payload.get("player").getAsString();
+
+						String rankFormatted = payload.has("rankFormatted") ? payload.get("rankFormatted").getAsString() : "§7" + player;
+
+						int dailiesToday = payload.get("dailiesToday").getAsInt();
+						int totalDailies = payload.get("totalDailies").getAsInt();
+						int weekliesThisWeek = payload.get("weekliesThisWeek").getAsInt();
+						int totalWeeklies = payload.get("totalWeeklies").getAsInt();
+						int completedThisWeek = payload.get("completedThisWeek").getAsInt();
+						int completedThisMonth = payload.get("completedThisMonth").getAsInt();
+						int completedThisYear = payload.get("completedThisYear").getAsInt();
+
+						String summarySuffix = rankFormatted.toLowerCase().endsWith("s") ? "'" : "'s";
+
+						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+						client.player.sendSystemMessage(Component.literal(rankFormatted + summarySuffix + " §f§lQuest Summary"));
+						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+						client.player.sendSystemMessage(Component.literal("§6§lCurrent Cycle:"));
+						client.player.sendSystemMessage(Component.literal("§7Dailies Today: §a" + dailiesToday + " / " + totalDailies + " §7Completed"));
+						client.player.sendSystemMessage(Component.literal("§7Weeklies This Week: §a" + weekliesThisWeek + " / " + totalWeeklies + " §7Completed"));
+						client.player.sendSystemMessage(Component.literal(""));
+						client.player.sendSystemMessage(Component.literal("§6§lTotal Completed:"));
+						client.player.sendSystemMessage(Component.literal("§7This Week: §b" + String.format("%,d", completedThisWeek) + " §7Quests"));
+						client.player.sendSystemMessage(Component.literal("§7This Month: §b" + String.format("%,d", completedThisMonth) + " §7Quests"));
+						client.player.sendSystemMessage(Component.literal("§7This Year: §b" + String.format("%,d", completedThisYear) + " §7Quests"));
+						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+
+					} else if (data != null && data.has("cause")) {
+						client.player.sendSystemMessage(Component.literal("§cError: " + data.get("cause").getAsString()));
+					} else {
+						client.player.sendSystemMessage(Component.literal("§cError: Could not display summary"));
+					}
+				});
+			} catch (Exception e) {
+				client.execute(() -> {
+					if (client.player != null) {
+						client.player.sendSystemMessage(Component.literal("§cError: Could not display summary"));
+					}
+				});
+				QuestViewer.LOGGER.error("Failed to fetch summary from Cloudflare Proxy", e);
+			}
+		});
 	}
 
 	private void fetchData(Minecraft client, String ign, String game, boolean weekly) {
@@ -513,7 +637,6 @@ public class QuestViewerClient implements ClientModInitializer {
 						String gameName = questObject.get("name").getAsString();
 						JsonArray questList = questObject.get("quests").getAsJsonArray();
 
-						// --- LEGACY LOBBY MENU ---
 						if (gameName.equalsIgnoreCase("Classic Games") || gameName.equalsIgnoreCase("Legacy")) {
 							client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 							client.player.sendSystemMessage(Component.literal("§eWhich game's " + (weekly ? "weekly" : "daily") + " quests would you like to view?"));
@@ -530,16 +653,14 @@ public class QuestViewerClient implements ClientModInitializer {
 							client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 							return;
 						}
-						// -------------------------
 
-						// Handle gamemodes that have no active quests (e.g. Housing, SkyBlock, SMP)
 						if (questList.isEmpty()) {
 							client.player.sendSystemMessage(Component.literal("§c" + gameName + " doesn't have any quests!"));
 							return;
 						}
 
 						client.player.sendSystemMessage(Component.literal("§m-------------------"));
-						client.player.sendSystemMessage(Component.literal("\n §l" + gameName + "\n " + (weekly ? "Weekly" : "Daily") + " Quests\n"));
+						client.player.sendSystemMessage(Component.literal("\n§l" + gameName + "\n§f" + (weekly ? "Weekly" : "Daily") + " Quests\n"));
 
 						for (JsonElement quest : questList) {
 							JsonObject questObj = quest.getAsJsonObject();
@@ -549,7 +670,7 @@ public class QuestViewerClient implements ClientModInitializer {
 							JsonArray objectives = statusObject.get("objectives").getAsJsonArray();
 							for (JsonElement objElem : objectives) {
 								JsonObject obj = objElem.getAsJsonObject();
-								String desc = obj.get("description").getAsString();
+								String fullDesc = obj.get("description").getAsString();
 								int progress = obj.get("progress").getAsInt();
 								int goal = obj.get("goal").getAsInt();
 
@@ -562,7 +683,13 @@ public class QuestViewerClient implements ClientModInitializer {
 									color = "§e";
 								}
 
-								client.player.sendSystemMessage(Component.literal("§f" + desc));
+								// Loop through the split lines here!
+								String[] lines = fullDesc.split("\n");
+								for (String line : lines) {
+									// Using trim() just in case the JSON passes a weird leading space
+									client.player.sendSystemMessage(Component.literal("§f" + line.trim()));
+								}
+
 								client.player.sendSystemMessage(Component.literal(color + progress + "/" + goal));
 							}
 						}
@@ -586,7 +713,7 @@ public class QuestViewerClient implements ClientModInitializer {
 	}
 
 	private void sendClickableGame(Minecraft client, String name, String command) {
-		MutableComponent comp = Component.literal(" §7- §b§l" + name)
+		MutableComponent comp = Component.literal("§7- §b§l" + name)
 				.withStyle(style -> style
 						.withClickEvent(new ClickEvent.RunCommand(command))
 						.withHoverEvent(new HoverEvent.ShowText(Component.literal("§eClick to view " + name + " quests")))

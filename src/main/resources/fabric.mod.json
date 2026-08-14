@@ -3,9 +3,9 @@
 	"id": "questviewer",
 	"version": "${version}",
 	"name": "QuestViewer",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "QuestViewer allows you to check your active Hypixel quest progress in-game without interacting the Quest Master",
 	"authors": [
-		"Me!"
+		"Skorlex"
 	],
 	"contact": {
 		"homepage": "https://fabricmc.net/",
