@@ -71,7 +71,6 @@ public class QuestViewerClient implements ClientModInitializer {
 								})
 								.then(ClientCommands.argument("action", StringArgumentType.word())
 										.suggests((context, builder) -> {
-											// Easter egg and alias left out of suggestions to keep it clean!
 											String[] suggestions = {"daily", "weekly", "leaderboard", "stats", "summary", "site", "games", "help"};
 											String remaining = builder.getRemaining().toLowerCase();
 											for (String suggestion : suggestions) {
@@ -226,7 +225,9 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void printHelp(Minecraft client) {
 		client.player.sendSystemMessage(Component.literal(""));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+		client.player.sendSystemMessage(Component.literal(""));
 		client.player.sendSystemMessage(Component.literal("§lHelp and Commands"));
+		client.player.sendSystemMessage(Component.literal(""));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 		client.player.sendSystemMessage(Component.literal("§e/q daily §7- Your daily quests for game you are playing"));
 		client.player.sendSystemMessage(Component.literal("§e/q weekly §7- Your weekly quests for game you are playing"));
@@ -256,7 +257,6 @@ public class QuestViewerClient implements ClientModInitializer {
 					if (client.player == null) return;
 
 					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
-						// Pulls the raw UUID directly from PlayerDB to use for the link
 						String uuid = data.getAsJsonObject("data").getAsJsonObject("player").get("raw_id").getAsString();
 						String url = "https://25karma.xyz/quests/" + uuid;
 
@@ -325,7 +325,9 @@ public class QuestViewerClient implements ClientModInitializer {
 					if (client.player == null) return;
 					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+						client.player.sendSystemMessage(Component.literal(""));
 						client.player.sendSystemMessage(Component.literal("§lGame Aliases"));
+						client.player.sendSystemMessage(Component.literal(""));
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 						JsonArray array = data.get("data").getAsJsonArray();
 						for (JsonElement game : array) {
@@ -373,6 +375,7 @@ public class QuestViewerClient implements ClientModInitializer {
 					if (client.player == null) return;
 
 					client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+					client.player.sendSystemMessage(Component.literal(""));
 
 					MutableComponent header = Component.literal("");
 
@@ -397,6 +400,7 @@ public class QuestViewerClient implements ClientModInitializer {
 					}
 
 					client.player.sendSystemMessage(header);
+					client.player.sendSystemMessage(Component.literal(""));
 					client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 
 					Pattern rowPattern = Pattern.compile("(?s)<tr>\\s*<td>(\\d+)</td>\\s*<td>(.*?)</td>\\s*<td>([\\d,]+)</td>");
@@ -517,7 +521,9 @@ public class QuestViewerClient implements ClientModInitializer {
 						String grammarSuffix = rankFormatted.toLowerCase().endsWith("s") ? "'" : "'s";
 
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+						client.player.sendSystemMessage(Component.literal(""));
 						client.player.sendSystemMessage(Component.literal(rankFormatted + grammarSuffix + " §f§lGeneral Stats"));
+						client.player.sendSystemMessage(Component.literal(""));
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 
 						client.player.sendSystemMessage(Component.literal("§7Network Level: §3" + String.format("%.2f", level)));
@@ -578,7 +584,9 @@ public class QuestViewerClient implements ClientModInitializer {
 						String summarySuffix = rankFormatted.toLowerCase().endsWith("s") ? "'" : "'s";
 
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+						client.player.sendSystemMessage(Component.literal(""));
 						client.player.sendSystemMessage(Component.literal(rankFormatted + summarySuffix + " §f§lQuest Summary"));
+						client.player.sendSystemMessage(Component.literal(""));
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 						client.player.sendSystemMessage(Component.literal("§6§lCurrent Cycle:"));
 						client.player.sendSystemMessage(Component.literal("§7Dailies Today: §a" + dailiesToday + " / " + totalDailies + " §7Completed"));
@@ -643,12 +651,16 @@ public class QuestViewerClient implements ClientModInitializer {
 							client.player.sendSystemMessage(Component.literal(""));
 
 							String cmdType = weekly ? "w" : "d";
-							sendClickableGame(client, "Arena Brawl", "/q " + cmdType + " arena " + ign);
-							sendClickableGame(client, "VampireZ", "/q " + cmdType + " vz " + ign);
-							sendClickableGame(client, "Turbo Kart Racers", "/q " + cmdType + " tkr " + ign);
-							sendClickableGame(client, "Quakecraft", "/q " + cmdType + " quake " + ign);
-							sendClickableGame(client, "The Walls", "/q " + cmdType + " walls " + ign);
-							sendClickableGame(client, "Paintball", "/q " + cmdType + " paintball " + ign);
+
+							// If 'game' is not "current", "legacy", or "classic", it means the proxy resolved a player name from the game parameter!
+							String targetPlayer = (game.equalsIgnoreCase("current") || game.equalsIgnoreCase("legacy") || game.equalsIgnoreCase("classic")) ? ign : game;
+
+							sendClickableGame(client, "Arena Brawl", "/q " + cmdType + " arena " + targetPlayer);
+							sendClickableGame(client, "VampireZ", "/q " + cmdType + " vz " + targetPlayer);
+							sendClickableGame(client, "Turbo Kart Racers", "/q " + cmdType + " tkr " + targetPlayer);
+							sendClickableGame(client, "Quakecraft", "/q " + cmdType + " quake " + targetPlayer);
+							sendClickableGame(client, "The Walls", "/q " + cmdType + " walls " + targetPlayer);
+							sendClickableGame(client, "Paintball", "/q " + cmdType + " paintball " + targetPlayer);
 
 							client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 							return;
@@ -683,10 +695,8 @@ public class QuestViewerClient implements ClientModInitializer {
 									color = "§e";
 								}
 
-								// Loop through the split lines here!
 								String[] lines = fullDesc.split("\n");
 								for (String line : lines) {
-									// Using trim() just in case the JSON passes a weird leading space
 									client.player.sendSystemMessage(Component.literal("§f" + line.trim()));
 								}
 
