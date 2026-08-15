@@ -11,6 +11,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -19,6 +20,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
+import net.minecraft.sounds.SoundEvents;
 import skorlex.questviewer.QuestViewer;
 
 import java.net.URI;
@@ -51,12 +53,30 @@ public class QuestViewerClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
+		// Initialize config on startup
+		QuestViewerConfig.load();
+
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (checkQuestsKey.consumeClick()) {
 				if (client.player != null) {
 					String selfName = client.player.getName().getString();
 					fetchData(client, selfName, "current", false);
 				}
+			}
+		});
+
+		// Intercept game system messages to detect quest completions
+		ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+			if (!QuestViewerConfig.getInstance().notificationsEnabled || overlay) return;
+
+			// getString() automatically strips the § color codes, leaving raw text.
+			String text = message.getString().trim();
+
+			// We use (?s) and .* at the end to ensure it triggers even if Hypixel sends the
+			// rewards list in the exact same chat packet separated by hidden \n line breaks.
+			if (text.matches("(?s)^(Daily|Weekly|Monthly) Quest: .* Completed!.*")) {
+				Minecraft client = Minecraft.getInstance();
+				playTestSound(client);
 			}
 		});
 
@@ -71,7 +91,7 @@ public class QuestViewerClient implements ClientModInitializer {
 								})
 								.then(ClientCommands.argument("action", StringArgumentType.word())
 										.suggests((context, builder) -> {
-											String[] suggestions = {"daily", "weekly", "leaderboard", "stats", "summary", "site", "games", "help"};
+											String[] suggestions = {"daily", "weekly", "leaderboard", "stats", "summary", "site", "games", "notification", "help"};
 											String remaining = builder.getRemaining().toLowerCase();
 											for (String suggestion : suggestions) {
 												if (suggestion.startsWith(remaining)) {
@@ -152,6 +172,12 @@ public class QuestViewerClient implements ClientModInitializer {
 					case "s":
 						printSite(client, selfName);
 						break;
+					case "notification":
+					case "notifications":
+					case "notify":
+					case "n":
+						toggleNotifications(client);
+						break;
 					case "summer_albert":
 					case "bert":
 						printAlbert(client);
@@ -162,6 +188,15 @@ public class QuestViewerClient implements ClientModInitializer {
 				}
 			} else if (args.length == 2) {
 				switch (args[0].toLowerCase()) {
+					case "notification":
+					case "n":
+						if (args[1].equalsIgnoreCase("pitch") || args[1].equalsIgnoreCase("p")) {
+							client.player.sendSystemMessage(Component.literal("§eCurrent notification pitch: §b" + QuestViewerConfig.getInstance().soundPitch + " §7(Default: 1.2)"));
+							client.player.sendSystemMessage(Component.literal("§7Use §e/q n p [0.5 - 2.0] §7to change it."));
+						} else {
+							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n p"));
+						}
+						break;
 					case "lb":
 					case "leaderboard":
 						int page = 1;
@@ -206,6 +241,24 @@ public class QuestViewerClient implements ClientModInitializer {
 				}
 			} else if (args.length == 3) {
 				switch (args[0].toLowerCase()) {
+					case "notification":
+					case "n":
+						if (args[1].equalsIgnoreCase("pitch") || args[1].equalsIgnoreCase("p")) {
+							try {
+								float pitch = Float.parseFloat(args[2].replace(',', '.'));
+								if (pitch < 0.5f || pitch > 2.0f) {
+									client.player.sendSystemMessage(Component.literal("§cPitch must be between 0.5 and 2.0!"));
+								} else {
+									QuestViewerConfig.getInstance().soundPitch = pitch;
+									QuestViewerConfig.save();
+									client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Notification pitch set to " + pitch));
+									playTestSound(client);
+								}
+							} catch (NumberFormatException e) {
+								client.player.sendSystemMessage(Component.literal("§cInvalid pitch! Please use a number."));
+							}
+						}
+						break;
 					case "weekly":
 					case "w":
 						fetchData(client, args[2], args[1], true);
@@ -222,6 +275,26 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	private void toggleNotifications(Minecraft client) {
+		QuestViewerConfig config = QuestViewerConfig.getInstance();
+		config.notificationsEnabled = !config.notificationsEnabled;
+		QuestViewerConfig.save();
+
+		if (config.notificationsEnabled) {
+			client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Quest completion notifications enabled!"));
+			playTestSound(client);
+		} else {
+			client.player.sendSystemMessage(Component.literal("§c[QuestViewer] Quest completion notifications disabled."));
+		}
+	}
+
+	private void playTestSound(Minecraft client) {
+		if (client.player != null) {
+			float pitch = QuestViewerConfig.getInstance().soundPitch;
+			client.player.playSound(SoundEvents.NOTE_BLOCK_CHIME.value(), 1.0F, pitch);
+		}
+	}
+
 	private void printHelp(Minecraft client) {
 		client.player.sendSystemMessage(Component.literal(""));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
@@ -236,6 +309,8 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("§e/q summary §7- View quests completed summary (- /q sum [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed"));
 		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q stats [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q notification §7- Toggle quest completion sound (- /q n)"));
+		client.player.sendSystemMessage(Component.literal("§e/q n pitch [0.5-2.0] §7- Set sound pitch (- /q n p)"));
 		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page (- /q site [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q games §7- Lists gamemode aliases"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
@@ -652,7 +727,6 @@ public class QuestViewerClient implements ClientModInitializer {
 
 							String cmdType = weekly ? "w" : "d";
 
-							// If 'game' is not "current", "legacy", or "classic", it means the proxy resolved a player name from the game parameter!
 							String targetPlayer = (game.equalsIgnoreCase("current") || game.equalsIgnoreCase("legacy") || game.equalsIgnoreCase("classic")) ? ign : game;
 
 							sendClickableGame(client, "Arena Brawl", "/q " + cmdType + " arena " + targetPlayer);
