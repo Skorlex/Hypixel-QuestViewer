@@ -15,12 +15,15 @@ import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
-import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundEvent;
 import skorlex.questviewer.QuestViewer;
 
 import java.net.URI;
@@ -33,6 +36,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class QuestViewerClient implements ClientModInitializer {
+
+	public static final Identifier DAILY_CHIME_ID = Identifier.fromNamespaceAndPath(QuestViewer.MOD_ID, "chime_daily");
+	public static final SoundEvent DAILY_CHIME_EVENT = SoundEvent.createVariableRangeEvent(DAILY_CHIME_ID);
+
+	public static final Identifier WEEKLY_CHIME_ID = Identifier.fromNamespaceAndPath(QuestViewer.MOD_ID, "chime_weekly");
+	public static final SoundEvent WEEKLY_CHIME_EVENT = SoundEvent.createVariableRangeEvent(WEEKLY_CHIME_ID);
 
 	public static final KeyMapping.Category CATEGORY = KeyMapping.Category.register(
 			Identifier.fromNamespaceAndPath(QuestViewer.MOD_ID, "quests")
@@ -51,32 +60,65 @@ public class QuestViewerClient implements ClientModInitializer {
 			.followRedirects(HttpClient.Redirect.ALWAYS)
 			.build();
 
+	private static final Pattern QUEST_COMPLETED_PATTERN = Pattern.compile("(?s)^(Daily|Weekly|Monthly) Quest: .* Completed!.*");
+
+	// The "Waiting Room" variables for the sound cooldown system
+	private static SoundEvent pendingSound = null;
+	private static float pendingPitch = 1.0F;
+	private static int soundDelayTicks = 0;
+
 	@Override
 	public void onInitializeClient() {
-		// Initialize config on startup
 		QuestViewerConfig.load();
 
+		Registry.register(BuiltInRegistries.SOUND_EVENT, DAILY_CHIME_ID, DAILY_CHIME_EVENT);
+		Registry.register(BuiltInRegistries.SOUND_EVENT, WEEKLY_CHIME_ID, WEEKLY_CHIME_EVENT);
+
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			// Keybinding check
 			while (checkQuestsKey.consumeClick()) {
 				if (client.player != null) {
 					String selfName = client.player.getName().getString();
 					fetchData(client, selfName, "current", false);
 				}
 			}
+
+			// Timer logic: Counts down and plays the sound when it hits zero
+			if (soundDelayTicks > 0) {
+				soundDelayTicks--;
+				if (soundDelayTicks == 0 && pendingSound != null && client.player != null) {
+					// Play as a 2D UI sound so it doesn't fade when moving
+					client.getSoundManager().play(SimpleSoundInstance.forUI(pendingSound, pendingPitch, 1.0F));
+					// Empty the waiting room after playing
+					pendingSound = null;
+				}
+			}
 		});
 
-		// Intercept game system messages to detect quest completions
 		ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
 			if (!QuestViewerConfig.getInstance().notificationsEnabled || overlay) return;
 
-			// getString() automatically strips the § color codes, leaving raw text.
 			String text = message.getString().trim();
+			Matcher matcher = QUEST_COMPLETED_PATTERN.matcher(text);
 
-			// We use (?s) and .* at the end to ensure it triggers even if Hypixel sends the
-			// rewards list in the exact same chat packet separated by hidden \n line breaks.
-			if (text.matches("(?s)^(Daily|Weekly|Monthly) Quest: .* Completed!.*")) {
-				Minecraft client = Minecraft.getInstance();
-				playTestSound(client);
+			if (matcher.matches()) {
+				String questType = matcher.group(1);
+
+				if (questType.equals("Daily")) {
+					// Only queue a Daily sound if a Weekly isn't already waiting
+					if (pendingSound != WEEKLY_CHIME_EVENT) {
+						pendingSound = DAILY_CHIME_EVENT;
+						pendingPitch = QuestViewerConfig.getInstance().dailyPitch;
+						// Sets a 5 tick (250 millisecond) delay window
+						soundDelayTicks = 5;
+					}
+				} else {
+					// Weekly or Monthly automatically overrides anything in the waiting room
+					pendingSound = WEEKLY_CHIME_EVENT;
+					pendingPitch = QuestViewerConfig.getInstance().weeklyPitch;
+					// Sets a 5 tick (250 millisecond) delay window
+					soundDelayTicks = 5;
+				}
 			}
 		});
 
@@ -190,11 +232,18 @@ public class QuestViewerClient implements ClientModInitializer {
 				switch (args[0].toLowerCase()) {
 					case "notification":
 					case "n":
-						if (args[1].equalsIgnoreCase("pitch") || args[1].equalsIgnoreCase("p")) {
-							client.player.sendSystemMessage(Component.literal("§eCurrent notification pitch: §b" + QuestViewerConfig.getInstance().soundPitch + " §7(Default: 1.2)"));
-							client.player.sendSystemMessage(Component.literal("§7Use §e/q n p [0.5 - 2.0] §7to change it."));
+						if (args[1].equalsIgnoreCase("daily") || args[1].equalsIgnoreCase("d")) {
+							float currentPitch = QuestViewerConfig.getInstance().dailyPitch;
+							client.player.sendSystemMessage(Component.literal("§eCurrent Daily pitch: §b" + currentPitch + " §7(Default: 1.2)"));
+							client.player.sendSystemMessage(Component.literal("§7Use §e/q n daily [0.5 - 2.0] §7to change it."));
+							playNotificationSound(client, DAILY_CHIME_EVENT, currentPitch);
+						} else if (args[1].equalsIgnoreCase("weekly") || args[1].equalsIgnoreCase("w")) {
+							float currentPitch = QuestViewerConfig.getInstance().weeklyPitch;
+							client.player.sendSystemMessage(Component.literal("§eCurrent Weekly pitch: §b" + currentPitch + " §7(Default: 1.2)"));
+							client.player.sendSystemMessage(Component.literal("§7Use §e/q n weekly [0.5 - 2.0] §7to change it."));
+							playNotificationSound(client, WEEKLY_CHIME_EVENT, currentPitch);
 						} else {
-							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n p"));
+							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n daily §cor §e/q n weekly"));
 						}
 						break;
 					case "lb":
@@ -243,20 +292,36 @@ public class QuestViewerClient implements ClientModInitializer {
 				switch (args[0].toLowerCase()) {
 					case "notification":
 					case "n":
-						if (args[1].equalsIgnoreCase("pitch") || args[1].equalsIgnoreCase("p")) {
+						if (args[1].equalsIgnoreCase("daily") || args[1].equalsIgnoreCase("d")) {
 							try {
 								float pitch = Float.parseFloat(args[2].replace(',', '.'));
 								if (pitch < 0.5f || pitch > 2.0f) {
 									client.player.sendSystemMessage(Component.literal("§cPitch must be between 0.5 and 2.0!"));
 								} else {
-									QuestViewerConfig.getInstance().soundPitch = pitch;
+									QuestViewerConfig.getInstance().dailyPitch = pitch;
 									QuestViewerConfig.save();
-									client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Notification pitch set to " + pitch));
-									playTestSound(client);
+									client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Daily notification pitch set to " + pitch));
+									playNotificationSound(client, DAILY_CHIME_EVENT, pitch);
 								}
 							} catch (NumberFormatException e) {
 								client.player.sendSystemMessage(Component.literal("§cInvalid pitch! Please use a number."));
 							}
+						} else if (args[1].equalsIgnoreCase("weekly") || args[1].equalsIgnoreCase("w")) {
+							try {
+								float pitch = Float.parseFloat(args[2].replace(',', '.'));
+								if (pitch < 0.5f || pitch > 2.0f) {
+									client.player.sendSystemMessage(Component.literal("§cPitch must be between 0.5 and 2.0!"));
+								} else {
+									QuestViewerConfig.getInstance().weeklyPitch = pitch;
+									QuestViewerConfig.save();
+									client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Weekly notification pitch set to " + pitch));
+									playNotificationSound(client, WEEKLY_CHIME_EVENT, pitch);
+								}
+							} catch (NumberFormatException e) {
+								client.player.sendSystemMessage(Component.literal("§cInvalid pitch! Please use a number."));
+							}
+						} else {
+							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n daily §cor §e/q n weekly"));
 						}
 						break;
 					case "weekly":
@@ -282,16 +347,16 @@ public class QuestViewerClient implements ClientModInitializer {
 
 		if (config.notificationsEnabled) {
 			client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Quest completion notifications enabled!"));
-			playTestSound(client);
+			playNotificationSound(client, DAILY_CHIME_EVENT, config.dailyPitch);
 		} else {
 			client.player.sendSystemMessage(Component.literal("§c[QuestViewer] Quest completion notifications disabled."));
 		}
 	}
 
-	private void playTestSound(Minecraft client) {
+	private void playNotificationSound(Minecraft client, SoundEvent soundEvent, float pitch) {
 		if (client.player != null) {
-			float pitch = QuestViewerConfig.getInstance().soundPitch;
-			client.player.playSound(SoundEvents.NOTE_BLOCK_CHIME.value(), 1.0F, pitch);
+			// Play as a 2D UI sound for instant playback during commands
+			client.getSoundManager().play(SimpleSoundInstance.forUI(soundEvent, pitch, 1.0F));
 		}
 	}
 
@@ -310,7 +375,8 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed"));
 		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q stats [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q notification §7- Toggle quest completion sound (- /q n)"));
-		client.player.sendSystemMessage(Component.literal("§e/q n pitch [0.5-2.0] §7- Set sound pitch (- /q n p)"));
+		client.player.sendSystemMessage(Component.literal("§e/q n daily §7- Test Daily sound (- /q n d [0.5-2.0])"));
+		client.player.sendSystemMessage(Component.literal("§e/q n weekly §7- Test Weekly sound (- /q n w [0.5-2.0])"));
 		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page (- /q site [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q games §7- Lists gamemode aliases"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
