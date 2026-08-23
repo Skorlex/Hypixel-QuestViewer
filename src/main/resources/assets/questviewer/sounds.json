@@ -1,0 +1,12 @@
+{
+  "chime_daily": {
+    "sounds": [
+      "questviewer:chime_daily"
+    ]
+  },
+  "chime_weekly": {
+    "sounds": [
+      "questviewer:chime_weekly"
+    ]
+  }
+}

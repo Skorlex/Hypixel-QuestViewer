@@ -62,11 +62,6 @@ public class QuestViewerClient implements ClientModInitializer {
 
 	private static final Pattern QUEST_COMPLETED_PATTERN = Pattern.compile("(?s)^(Daily|Weekly|Monthly) Quest: .* Completed!.*");
 
-	// The "Waiting Room" variables for the sound cooldown system
-	private static SoundEvent pendingSound = null;
-	private static float pendingPitch = 1.0F;
-	private static int soundDelayTicks = 0;
-
 	@Override
 	public void onInitializeClient() {
 		QuestViewerConfig.load();
@@ -74,23 +69,15 @@ public class QuestViewerClient implements ClientModInitializer {
 		Registry.register(BuiltInRegistries.SOUND_EVENT, DAILY_CHIME_ID, DAILY_CHIME_EVENT);
 		Registry.register(BuiltInRegistries.SOUND_EVENT, WEEKLY_CHIME_ID, WEEKLY_CHIME_EVENT);
 
+		// Initialize the sequential audio queue system
+		SoundQueueManager.register();
+
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			// Keybinding check
 			while (checkQuestsKey.consumeClick()) {
 				if (client.player != null) {
 					String selfName = client.player.getName().getString();
 					fetchData(client, selfName, "current", false);
-				}
-			}
-
-			// Timer logic: Counts down and plays the sound when it hits zero
-			if (soundDelayTicks > 0) {
-				soundDelayTicks--;
-				if (soundDelayTicks == 0 && pendingSound != null && client.player != null) {
-					// Play as a 2D UI sound so it doesn't fade when moving
-					client.getSoundManager().play(SimpleSoundInstance.forUI(pendingSound, pendingPitch, 1.0F));
-					// Empty the waiting room after playing
-					pendingSound = null;
 				}
 			}
 		});
@@ -105,19 +92,9 @@ public class QuestViewerClient implements ClientModInitializer {
 				String questType = matcher.group(1);
 
 				if (questType.equals("Daily")) {
-					// Only queue a Daily sound if a Weekly isn't already waiting
-					if (pendingSound != WEEKLY_CHIME_EVENT) {
-						pendingSound = DAILY_CHIME_EVENT;
-						pendingPitch = QuestViewerConfig.getInstance().dailyPitch;
-						// Sets a 5 tick (250 millisecond) delay window
-						soundDelayTicks = 5;
-					}
+					SoundQueueManager.enqueueSound(SoundQueueManager.SoundType.DAILY);
 				} else {
-					// Weekly or Monthly automatically overrides anything in the waiting room
-					pendingSound = WEEKLY_CHIME_EVENT;
-					pendingPitch = QuestViewerConfig.getInstance().weeklyPitch;
-					// Sets a 5 tick (250 millisecond) delay window
-					soundDelayTicks = 5;
+					SoundQueueManager.enqueueSound(SoundQueueManager.SoundType.WEEKLY);
 				}
 			}
 		});
@@ -218,7 +195,7 @@ public class QuestViewerClient implements ClientModInitializer {
 					case "notifications":
 					case "notify":
 					case "n":
-						toggleNotifications(client);
+						client.player.sendSystemMessage(Component.literal("§cPlease specify a sound to test: §e/q n daily §cor §e/q n weekly"));
 						break;
 					case "summer_albert":
 					case "bert":
@@ -340,24 +317,9 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
-	private void toggleNotifications(Minecraft client) {
-		QuestViewerConfig config = QuestViewerConfig.getInstance();
-		config.notificationsEnabled = !config.notificationsEnabled;
-		QuestViewerConfig.save();
-
-		if (config.notificationsEnabled) {
-			client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Quest completion notifications enabled!"));
-			playNotificationSound(client, DAILY_CHIME_EVENT, config.dailyPitch);
-		} else {
-			client.player.sendSystemMessage(Component.literal("§c[QuestViewer] Quest completion notifications disabled."));
-		}
-	}
-
 	private void playNotificationSound(Minecraft client, SoundEvent soundEvent, float pitch) {
-		if (client.player != null) {
-			// Play as a 2D UI sound for instant playback during commands
-			client.getSoundManager().play(SimpleSoundInstance.forUI(soundEvent, pitch, 1.0F));
-		}
+		// Sends a 100.0F UI sound to perfectly mirror the queue's audio properties
+		client.getSoundManager().play(SimpleSoundInstance.forUI(soundEvent, pitch, 100.0F));
 	}
 
 	private void printHelp(Minecraft client) {
@@ -374,7 +336,6 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("§e/q summary §7- View quests completed summary (- /q sum [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed"));
 		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q stats [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e/q notification §7- Toggle quest completion sound (- /q n)"));
 		client.player.sendSystemMessage(Component.literal("§e/q n daily §7- Test Daily sound (- /q n d [0.5-2.0])"));
 		client.player.sendSystemMessage(Component.literal("§e/q n weekly §7- Test Weekly sound (- /q n w [0.5-2.0])"));
 		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page (- /q site [ign])"));
