@@ -3,7 +3,7 @@
 	"id": "questviewer",
 	"version": "${version}",
 	"name": "QuestViewer",
-	"description": "QuestViewer allows you to check your active Hypixel quest progress in-game without interacting the Quest Master",
+	"description": "QuestViewer allows you to check your active Hypixel quest progress in-game without interacting with the Quest Master",
 	"authors": [
 		"Skorlex"
 	],
