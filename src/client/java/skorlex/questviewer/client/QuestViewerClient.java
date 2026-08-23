@@ -5,10 +5,20 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.brigadier.LiteralMessage;
+import com.mojang.brigadier.StringReader;
+import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
@@ -30,6 +40,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
@@ -69,11 +81,9 @@ public class QuestViewerClient implements ClientModInitializer {
 		Registry.register(BuiltInRegistries.SOUND_EVENT, DAILY_CHIME_ID, DAILY_CHIME_EVENT);
 		Registry.register(BuiltInRegistries.SOUND_EVENT, WEEKLY_CHIME_ID, WEEKLY_CHIME_EVENT);
 
-		// Initialize the sequential audio queue system
 		SoundQueueManager.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			// Keybinding check
 			while (checkQuestsKey.consumeClick()) {
 				if (client.player != null) {
 					String selfName = client.player.getName().getString();
@@ -102,47 +112,121 @@ public class QuestViewerClient implements ClientModInitializer {
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
 			String[] aliases = {"q", "quest", "quests"};
 			for (String alias : aliases) {
-				dispatcher.register(
-						ClientCommands.literal(alias)
-								.executes(context -> {
-									processArgs(Minecraft.getInstance(), new String[0]);
-									return 1;
-								})
-								.then(ClientCommands.argument("action", StringArgumentType.word())
-										.suggests((context, builder) -> {
-											String[] suggestions = {"daily", "weekly", "leaderboard", "stats", "summary", "site", "games", "notification", "help"};
-											String remaining = builder.getRemaining().toLowerCase();
-											for (String suggestion : suggestions) {
-												if (suggestion.startsWith(remaining)) {
-													builder.suggest(suggestion);
-												}
-											}
-											return builder.buildFuture();
-										})
-										.executes(context -> {
-											String action = StringArgumentType.getString(context, "action");
-											processArgs(Minecraft.getInstance(), new String[]{action});
-											return 1;
-										})
-										.then(ClientCommands.argument("game_or_player", StringArgumentType.word())
-												.executes(context -> {
-													String action = StringArgumentType.getString(context, "action");
-													String target = StringArgumentType.getString(context, "game_or_player");
-													processArgs(Minecraft.getInstance(), new String[]{action, target});
-													return 1;
-												})
-												.then(ClientCommands.argument("player", StringArgumentType.word())
-														.executes(context -> {
-															String action = StringArgumentType.getString(context, "action");
-															String target = StringArgumentType.getString(context, "game_or_player");
-															String player = StringArgumentType.getString(context, "player");
-															processArgs(Minecraft.getInstance(), new String[]{action, target, player});
-															return 1;
-														})
-												)
-										)
-								)
+
+				LiteralArgumentBuilder<FabricClientCommandSource> baseCommand = ClientCommands.literal(alias)
+						.executes(context -> {
+							processArgs(Minecraft.getInstance(), new String[0]);
+							return 1;
+						});
+
+				// 1. NO ARGUMENTS: help, h, games (No ghost text)
+				for (String sub : new String[]{"help", "h", "games"}) {
+					baseCommand.then(ClientCommands.literal(sub)
+							.executes(context -> {
+								processArgs(Minecraft.getInstance(), new String[]{sub});
+								return 1;
+							})
+					);
+				}
+
+				// 2. OPTIONAL IGN: summary, sum, stats, s, site (Shows [<ign>])
+				for (String sub : new String[]{"summary", "sum", "stats", "s", "site"}) {
+					baseCommand.then(ClientCommands.literal(sub)
+							.executes(context -> {
+								processArgs(Minecraft.getInstance(), new String[]{sub});
+								return 1;
+							})
+							.then(ClientCommands.argument("ign", StringArgumentType.word())
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "ign")});
+										return 1;
+									})
+							)
+					);
+				}
+
+				// 3. OPTIONAL PAGE: leaderboard, lb (Shows [<page>])
+				for (String sub : new String[]{"leaderboard", "lb"}) {
+					baseCommand.then(ClientCommands.literal(sub)
+							.executes(context -> {
+								processArgs(Minecraft.getInstance(), new String[]{sub});
+								return 1;
+							})
+							.then(ClientCommands.argument("page", StringArgumentType.word())
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "page")});
+										return 1;
+									})
+							)
+					);
+				}
+
+				// 4. NOTIFICATION: notification, n (Auto-suggests 'daily', 'd', 'weekly', 'w')
+				for (String sub : new String[]{"notification", "n"}) {
+					baseCommand.then(ClientCommands.literal(sub)
+							.executes(context -> {
+								processArgs(Minecraft.getInstance(), new String[]{sub});
+								return 1;
+							})
+							.then(ClientCommands.literal("daily")
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, "daily"});
+										return 1;
+									})
+							)
+							.then(ClientCommands.literal("d")
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, "d"});
+										return 1;
+									})
+							)
+							.then(ClientCommands.literal("weekly")
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, "weekly"});
+										return 1;
+									})
+							)
+							.then(ClientCommands.literal("w")
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, "w"});
+										return 1;
+									})
+							)
+					);
+				}
+
+				// 5. OPTIONAL GAME & IGN: daily, d, weekly, w (Shows [<game>] [<ign>])
+				for (String sub : new String[]{"daily", "d", "weekly", "w"}) {
+					baseCommand.then(ClientCommands.literal(sub)
+							.executes(context -> {
+								processArgs(Minecraft.getInstance(), new String[]{sub});
+								return 1;
+							})
+							.then(ClientCommands.argument("game", StringArgumentType.word())
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "game")});
+										return 1;
+									})
+									.then(ClientCommands.argument("ign", StringArgumentType.word())
+											.executes(context -> {
+												processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "game"), StringArgumentType.getString(context, "ign")});
+												return 1;
+											})
+									)
+							)
+					);
+				}
+
+				// 6. CUSTOM HIDDEN PARSER (Handles easter eggs invisibly and turns fake input red)
+				// Changed from "secret" to "arg" to clean up the ghost text!
+				baseCommand.then(ClientCommands.argument("arg", new SecretArgumentType())
+						.executes(context -> {
+							processArgs(Minecraft.getInstance(), new String[]{context.getArgument("arg", String.class)});
+							return 1;
+						})
 				);
+
+				dispatcher.register(baseCommand);
 			}
 		});
 	}
@@ -157,10 +241,8 @@ public class QuestViewerClient implements ClientModInitializer {
 				printHelp(client);
 			} else if (args.length == 1) {
 				switch (args[0].toLowerCase()) {
-					case "api":
-						client.player.sendSystemMessage(Component.literal("§cYour API key is no longer needed to use this mod :)"));
-						break;
 					case "help":
+					case "h":
 						printHelp(client);
 						break;
 					case "games":
@@ -170,9 +252,8 @@ public class QuestViewerClient implements ClientModInitializer {
 					case "leaderboard":
 						fetchLeaderboard(client, 1);
 						break;
-					case "info":
-					case "i":
 					case "stats":
+					case "s":
 						fetchStats(client, selfName);
 						break;
 					case "sum":
@@ -188,7 +269,6 @@ public class QuestViewerClient implements ClientModInitializer {
 						fetchData(client, selfName, "current", false);
 						break;
 					case "site":
-					case "s":
 						printSite(client, selfName);
 						break;
 					case "notification":
@@ -197,6 +277,7 @@ public class QuestViewerClient implements ClientModInitializer {
 					case "n":
 						client.player.sendSystemMessage(Component.literal("§cPlease specify a sound to test: §e/q n daily §cor §e/q n weekly"));
 						break;
+					case "albert":
 					case "summer_albert":
 					case "bert":
 						printAlbert(client);
@@ -209,16 +290,12 @@ public class QuestViewerClient implements ClientModInitializer {
 				switch (args[0].toLowerCase()) {
 					case "notification":
 					case "n":
+					case "notify":
+					case "notifications":
 						if (args[1].equalsIgnoreCase("daily") || args[1].equalsIgnoreCase("d")) {
-							float currentPitch = QuestViewerConfig.getInstance().dailyPitch;
-							client.player.sendSystemMessage(Component.literal("§eCurrent Daily pitch: §b" + currentPitch + " §7(Default: 1.2)"));
-							client.player.sendSystemMessage(Component.literal("§7Use §e/q n daily [0.5 - 2.0] §7to change it."));
-							playNotificationSound(client, DAILY_CHIME_EVENT, currentPitch);
+							playNotificationSound(client, DAILY_CHIME_EVENT, QuestViewerConfig.getInstance().dailyPitch);
 						} else if (args[1].equalsIgnoreCase("weekly") || args[1].equalsIgnoreCase("w")) {
-							float currentPitch = QuestViewerConfig.getInstance().weeklyPitch;
-							client.player.sendSystemMessage(Component.literal("§eCurrent Weekly pitch: §b" + currentPitch + " §7(Default: 1.2)"));
-							client.player.sendSystemMessage(Component.literal("§7Use §e/q n weekly [0.5 - 2.0] §7to change it."));
-							playNotificationSound(client, WEEKLY_CHIME_EVENT, currentPitch);
+							playNotificationSound(client, WEEKLY_CHIME_EVENT, QuestViewerConfig.getInstance().weeklyPitch);
 						} else {
 							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n daily §cor §e/q n weekly"));
 						}
@@ -241,12 +318,10 @@ public class QuestViewerClient implements ClientModInitializer {
 						fetchLeaderboard(client, page);
 						break;
 					case "site":
-					case "s":
 						printSite(client, args[1]);
 						break;
-					case "info":
-					case "i":
 					case "stats":
+					case "s":
 						fetchStats(client, args[1]);
 						break;
 					case "sum":
@@ -267,40 +342,6 @@ public class QuestViewerClient implements ClientModInitializer {
 				}
 			} else if (args.length == 3) {
 				switch (args[0].toLowerCase()) {
-					case "notification":
-					case "n":
-						if (args[1].equalsIgnoreCase("daily") || args[1].equalsIgnoreCase("d")) {
-							try {
-								float pitch = Float.parseFloat(args[2].replace(',', '.'));
-								if (pitch < 0.5f || pitch > 2.0f) {
-									client.player.sendSystemMessage(Component.literal("§cPitch must be between 0.5 and 2.0!"));
-								} else {
-									QuestViewerConfig.getInstance().dailyPitch = pitch;
-									QuestViewerConfig.save();
-									client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Daily notification pitch set to " + pitch));
-									playNotificationSound(client, DAILY_CHIME_EVENT, pitch);
-								}
-							} catch (NumberFormatException e) {
-								client.player.sendSystemMessage(Component.literal("§cInvalid pitch! Please use a number."));
-							}
-						} else if (args[1].equalsIgnoreCase("weekly") || args[1].equalsIgnoreCase("w")) {
-							try {
-								float pitch = Float.parseFloat(args[2].replace(',', '.'));
-								if (pitch < 0.5f || pitch > 2.0f) {
-									client.player.sendSystemMessage(Component.literal("§cPitch must be between 0.5 and 2.0!"));
-								} else {
-									QuestViewerConfig.getInstance().weeklyPitch = pitch;
-									QuestViewerConfig.save();
-									client.player.sendSystemMessage(Component.literal("§a[QuestViewer] Weekly notification pitch set to " + pitch));
-									playNotificationSound(client, WEEKLY_CHIME_EVENT, pitch);
-								}
-							} catch (NumberFormatException e) {
-								client.player.sendSystemMessage(Component.literal("§cInvalid pitch! Please use a number."));
-							}
-						} else {
-							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n daily §cor §e/q n weekly"));
-						}
-						break;
 					case "weekly":
 					case "w":
 						fetchData(client, args[2], args[1], true);
@@ -318,7 +359,6 @@ public class QuestViewerClient implements ClientModInitializer {
 	}
 
 	private void playNotificationSound(Minecraft client, SoundEvent soundEvent, float pitch) {
-		// Sends a 100.0F UI sound to perfectly mirror the queue's audio properties
 		client.getSoundManager().play(SimpleSoundInstance.forUI(soundEvent, pitch, 100.0F));
 	}
 
@@ -334,10 +374,10 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("§e/q daily [game] {ign} §7- Your daily quests for specified game"));
 		client.player.sendSystemMessage(Component.literal("§e/q weekly [game] {ign} §7- Your weekly quests for specified game"));
 		client.player.sendSystemMessage(Component.literal("§e/q summary §7- View quests completed summary (- /q sum [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed"));
-		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q stats [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e/q n daily §7- Test Daily sound (- /q n d [0.5-2.0])"));
-		client.player.sendSystemMessage(Component.literal("§e/q n weekly §7- Test Weekly sound (- /q n w [0.5-2.0])"));
+		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed (- /q lb)"));
+		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q s [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q n daily §7- Test Daily sound (- /q n d)"));
+		client.player.sendSystemMessage(Component.literal("§e/q n weekly §7- Test Weekly sound (- /q n w)"));
 		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page (- /q site [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q games §7- Lists gamemode aliases"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
@@ -830,5 +870,36 @@ public class QuestViewerClient implements ClientModInitializer {
 						.withHoverEvent(new HoverEvent.ShowText(Component.literal("§eClick to view " + name + " quests")))
 				);
 		client.player.sendSystemMessage(comp);
+	}
+
+	/**
+	 * Custom Argument Type specifically designed to handle easter eggs.
+	 * It hides them from the suggestion list, but forces fake commands (like '/q hello') to turn red!
+	 */
+	private static class SecretArgumentType implements ArgumentType<String> {
+		private static final List<String> SECRETS = Arrays.asList("bert", "albert", "summer_albert");
+		private static final SimpleCommandExceptionType EXCEPTION = new SimpleCommandExceptionType(new LiteralMessage("Unknown command"));
+
+		@Override
+		public String parse(StringReader reader) throws CommandSyntaxException {
+			int start = reader.getCursor();
+			String word = reader.readUnquotedString();
+
+			// If the word matches our easter eggs, approve it silently!
+			if (SECRETS.contains(word)) {
+				return word;
+			}
+
+			// If it is NOT an easter egg, we crash the parser right here.
+			// This forces Minecraft to highlight the word in red and kills the ghost text.
+			reader.setCursor(start);
+			throw EXCEPTION.createWithContext(reader);
+		}
+
+		@Override
+		public <S> CompletableFuture<Suggestions> listSuggestions(CommandContext<S> context, SuggestionsBuilder builder) {
+			// Send an empty list to keep the easter eggs completely invisible in the autocomplete UI
+			return builder.buildFuture();
+		}
 	}
 }
