@@ -15,10 +15,12 @@ public class QuestViewerConfig {
     private static final File CONFIG_FILE = new File(FabricLoader.getInstance().getConfigDir().toFile(), QuestViewer.MOD_ID + ".json");
     private static QuestViewerConfig instance = new QuestViewerConfig();
 
-    // The newly decoupled config variables that QuestViewerClient is looking for
     public boolean notificationsEnabled = true;
     public float dailyPitch = 1.2F;
     public float weeklyPitch = 1.2F;
+
+    // Tracks if the user has received the welcome message
+    public boolean firstTime = true;
 
     public static QuestViewerConfig getInstance() {
         return instance;

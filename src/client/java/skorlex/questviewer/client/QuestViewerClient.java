@@ -84,6 +84,15 @@ public class QuestViewerClient implements ClientModInitializer {
 		SoundQueueManager.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			// Send the welcome message if the player has fully loaded and it is their first time
+			if (client.player != null && QuestViewerConfig.getInstance().firstTime) {
+				client.player.sendSystemMessage(Component.literal("§e§lUsing QuestViewer for the first time? Type /q help to view the list of available commands!"));
+
+				// Disable the flag and save the config so this never triggers again
+				QuestViewerConfig.getInstance().firstTime = false;
+				QuestViewerConfig.save();
+			}
+
 			while (checkQuestsKey.consumeClick()) {
 				if (client.player != null) {
 					String selfName = client.player.getName().getString();
@@ -161,7 +170,7 @@ public class QuestViewerClient implements ClientModInitializer {
 					);
 				}
 
-				// 4. NOTIFICATION: notification, n (Auto-suggests 'daily', 'd', 'weekly', 'w')
+				// 4. NOTIFICATION: notification, n (Auto-suggests 'daily', 'd', 'weekly', 'w', 'toggle', 't')
 				for (String sub : new String[]{"notification", "n"}) {
 					baseCommand.then(ClientCommands.literal(sub)
 							.executes(context -> {
@@ -192,6 +201,18 @@ public class QuestViewerClient implements ClientModInitializer {
 										return 1;
 									})
 							)
+							.then(ClientCommands.literal("toggle")
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, "toggle"});
+										return 1;
+									})
+							)
+							.then(ClientCommands.literal("t")
+									.executes(context -> {
+										processArgs(Minecraft.getInstance(), new String[]{sub, "t"});
+										return 1;
+									})
+							)
 					);
 				}
 
@@ -218,7 +239,6 @@ public class QuestViewerClient implements ClientModInitializer {
 				}
 
 				// 6. CUSTOM HIDDEN PARSER (Handles easter eggs invisibly and turns fake input red)
-				// Changed from "secret" to "arg" to clean up the ghost text!
 				baseCommand.then(ClientCommands.argument("arg", new SecretArgumentType())
 						.executes(context -> {
 							processArgs(Minecraft.getInstance(), new String[]{context.getArgument("arg", String.class)});
@@ -275,7 +295,7 @@ public class QuestViewerClient implements ClientModInitializer {
 					case "notifications":
 					case "notify":
 					case "n":
-						client.player.sendSystemMessage(Component.literal("§cPlease specify a sound to test: §e/q n daily §cor §e/q n weekly"));
+						client.player.sendSystemMessage(Component.literal("§cPlease specify a sound to test: §e/q n daily§c, §e/q n weekly§c, or §e/q n toggle"));
 						break;
 					case "albert":
 					case "summer_albert":
@@ -296,8 +316,14 @@ public class QuestViewerClient implements ClientModInitializer {
 							playNotificationSound(client, DAILY_CHIME_EVENT, QuestViewerConfig.getInstance().dailyPitch);
 						} else if (args[1].equalsIgnoreCase("weekly") || args[1].equalsIgnoreCase("w")) {
 							playNotificationSound(client, WEEKLY_CHIME_EVENT, QuestViewerConfig.getInstance().weeklyPitch);
+						} else if (args[1].equalsIgnoreCase("toggle") || args[1].equalsIgnoreCase("t")) {
+							QuestViewerConfig config = QuestViewerConfig.getInstance();
+							config.notificationsEnabled = !config.notificationsEnabled;
+							QuestViewerConfig.save();
+							String status = config.notificationsEnabled ? "§aON" : "§cOFF";
+							client.player.sendSystemMessage(Component.literal("§eQuest notifications are now " + status));
 						} else {
-							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n daily §cor §e/q n weekly"));
+							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n daily§c, §e/q n weekly§c, or §e/q n toggle"));
 						}
 						break;
 					case "lb":
@@ -378,6 +404,7 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q s [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q n daily §7- Test Daily sound (- /q n d)"));
 		client.player.sendSystemMessage(Component.literal("§e/q n weekly §7- Test Weekly sound (- /q n w)"));
+		client.player.sendSystemMessage(Component.literal("§e/q n toggle §7- Toggle notification sounds ON/OFF (- /q n t)"));
 		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page (- /q site [ign])"));
 		client.player.sendSystemMessage(Component.literal("§e/q games §7- Lists gamemode aliases"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
@@ -456,7 +483,7 @@ public class QuestViewerClient implements ClientModInitializer {
 		CompletableFuture.runAsync(() -> {
 			try {
 				HttpRequest request = HttpRequest.newBuilder()
-						.uri(URI.create("https://questviewer-proxy.alexiscanovi78.workers.dev/api/misc/gameAliases/"))
+						.uri(URI.create("https://questviewer-proxy.skorlex.workers.dev/api/misc/gameAliases/"))
 						.header("content-type", "application/json")
 						.GET()
 						.build();
@@ -637,7 +664,7 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void fetchStats(Minecraft client, String name) {
 		CompletableFuture.runAsync(() -> {
 			try {
-				String url = "https://questviewer-proxy.alexiscanovi78.workers.dev/api/stats/" + name;
+				String url = "https://questviewer-proxy.skorlex.workers.dev/api/stats/" + name;
 				HttpRequest request = HttpRequest.newBuilder()
 						.uri(URI.create(url))
 						.header("content-type", "application/json")
@@ -696,7 +723,7 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void fetchSummary(Minecraft client, String ign) {
 		CompletableFuture.runAsync(() -> {
 			try {
-				String url = "https://questviewer-proxy.alexiscanovi78.workers.dev/api/quests/summary/" + ign;
+				String url = "https://questviewer-proxy.skorlex.workers.dev/api/quests/summary/" + ign;
 				HttpRequest request = HttpRequest.newBuilder()
 						.uri(URI.create(url))
 						.header("content-type", "application/json")
@@ -760,7 +787,7 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void fetchData(Minecraft client, String ign, String game, boolean weekly) {
 		CompletableFuture.runAsync(() -> {
 			try {
-				String url = "https://questviewer-proxy.alexiscanovi78.workers.dev/api/quests/player_simple/" + ign + "?type=" + (weekly ? "weekly" : "daily") + "&game=" + game;
+				String url = "https://questviewer-proxy.skorlex.workers.dev/api/quests/player_simple/" + ign + "?type=" + (weekly ? "weekly" : "daily") + "&game=" + game;
 				HttpRequest request = HttpRequest.newBuilder()
 						.uri(URI.create(url))
 						.header("content-type", "application/json")
