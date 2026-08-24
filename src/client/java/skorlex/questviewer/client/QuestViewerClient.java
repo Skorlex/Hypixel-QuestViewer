@@ -74,6 +74,9 @@ public class QuestViewerClient implements ClientModInitializer {
 
 	private static final Pattern QUEST_COMPLETED_PATTERN = Pattern.compile("(?s)^(Daily|Weekly|Monthly) Quest: .* Completed!.*");
 
+	// 60 ticks = exactly 3 seconds of in-game time
+	private static int welcomeDelay = 60;
+
 	@Override
 	public void onInitializeClient() {
 		QuestViewerConfig.load();
@@ -84,13 +87,17 @@ public class QuestViewerClient implements ClientModInitializer {
 		SoundQueueManager.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			// Send the welcome message if the player has fully loaded and it is their first time
+			// Send the welcome message 3 seconds after the player has fully loaded
 			if (client.player != null && QuestViewerConfig.getInstance().firstTime) {
-				client.player.sendSystemMessage(Component.literal("§e§lUsing QuestViewer for the first time? Type /q help to view the list of available commands!"));
+				if (welcomeDelay > 0) {
+					welcomeDelay--;
+				} else {
+					client.player.sendSystemMessage(Component.literal("§e§lUsing §6§lQuestViewer§e§l for the first time? Type §6§l/q help§e§l to view the list of available commands!"));
 
-				// Disable the flag and save the config so this never triggers again
-				QuestViewerConfig.getInstance().firstTime = false;
-				QuestViewerConfig.save();
+					// Disable the flag and save the config so this never triggers again
+					QuestViewerConfig.getInstance().firstTime = false;
+					QuestViewerConfig.save();
+				}
 			}
 
 			while (checkQuestsKey.consumeClick()) {
@@ -128,8 +135,8 @@ public class QuestViewerClient implements ClientModInitializer {
 							return 1;
 						});
 
-				// 1. NO ARGUMENTS: help, h, games (No ghost text)
-				for (String sub : new String[]{"help", "h", "games"}) {
+				// 1. NO ARGUMENTS: help, h, games, g (No ghost text)
+				for (String sub : new String[]{"help", "h", "games", "g"}) {
 					baseCommand.then(ClientCommands.literal(sub)
 							.executes(context -> {
 								processArgs(Minecraft.getInstance(), new String[]{sub});
@@ -266,6 +273,7 @@ public class QuestViewerClient implements ClientModInitializer {
 						printHelp(client);
 						break;
 					case "games":
+					case "g":
 						fetchGames(client);
 						break;
 					case "lb":
@@ -322,6 +330,10 @@ public class QuestViewerClient implements ClientModInitializer {
 							QuestViewerConfig.save();
 							String status = config.notificationsEnabled ? "§aON" : "§cOFF";
 							client.player.sendSystemMessage(Component.literal("§eQuest notifications are now " + status));
+
+							if (config.notificationsEnabled) {
+								playNotificationSound(client, DAILY_CHIME_EVENT, config.dailyPitch);
+							}
 						} else {
 							client.player.sendSystemMessage(Component.literal("§cUnknown sub-command. Try §e/q n daily§c, §e/q n weekly§c, or §e/q n toggle"));
 						}
@@ -395,18 +407,20 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("§lHelp and Commands"));
 		client.player.sendSystemMessage(Component.literal(""));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
-		client.player.sendSystemMessage(Component.literal("§e/q daily §7- Your daily quests for game you are playing"));
-		client.player.sendSystemMessage(Component.literal("§e/q weekly §7- Your weekly quests for game you are playing"));
+		client.player.sendSystemMessage(Component.literal("§e/q daily §7- Your daily quests for game you are playing §b(/q d)"));
+		client.player.sendSystemMessage(Component.literal("§e/q weekly §7- Your weekly quests for game you are playing §b(/q w)"));
 		client.player.sendSystemMessage(Component.literal("§e/q daily [game] {ign} §7- Your daily quests for specified game"));
 		client.player.sendSystemMessage(Component.literal("§e/q weekly [game] {ign} §7- Your weekly quests for specified game"));
-		client.player.sendSystemMessage(Component.literal("§e/q summary §7- View quests completed summary (- /q sum [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed (- /q lb)"));
-		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats (- /q s [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e/q n daily §7- Test Daily sound (- /q n d)"));
-		client.player.sendSystemMessage(Component.literal("§e/q n weekly §7- Test Weekly sound (- /q n w)"));
-		client.player.sendSystemMessage(Component.literal("§e/q n toggle §7- Toggle notification sounds ON/OFF (- /q n t)"));
-		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page (- /q site [ign])"));
-		client.player.sendSystemMessage(Component.literal("§e/q games §7- Lists gamemode aliases"));
+		client.player.sendSystemMessage(Component.literal("§e/q summary §7- View quests completed summary §b(/q sum [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q leaderboard [1-10] §7- View the top 100 quests completed §b(/q lb [page])"));
+		client.player.sendSystemMessage(Component.literal("§e/q stats §7- View your general Hypixel stats §b(/q s [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q n daily §7- Test Daily sound §b(/q n d)"));
+		client.player.sendSystemMessage(Component.literal("§e/q n weekly §7- Test Weekly sound §b(/q n w)"));
+		client.player.sendSystemMessage(Component.literal("§e/q n toggle §7- Toggle notification sounds ON/OFF §b(/q n t)"));
+		client.player.sendSystemMessage(Component.literal("§e/q site §7- Link to 25Karma quest page §b(/q site [ign])"));
+		client.player.sendSystemMessage(Component.literal("§e/q games §7- Lists gamemode aliases §b(/q g)"));
+		client.player.sendSystemMessage(Component.literal(""));
+		client.player.sendSystemMessage(Component.literal("§e§lTip: §7Press §b" + checkQuestsKey.getTranslatedKeyMessage().getString().toUpperCase() + " §7(configurable in controls) to view current daily quests!"));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 	}
 
