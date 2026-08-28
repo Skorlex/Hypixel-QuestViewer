@@ -1,4 +1,5 @@
 {
-  "key.category.questviewer.quests": "Quest Viewer",
-  "key.questviewer.check_quests": "Check Hypixel Quests"
+  "key.questviewer.check_daily_quests": "Check Hypixel Daily Quests",
+  "key.questviewer.check_weekly_quests": "Check Hypixel Weekly Quests",
+  "key.category.questviewer.quests": "Quest Viewer"
 }
