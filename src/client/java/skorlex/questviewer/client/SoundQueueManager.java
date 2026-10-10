@@ -8,35 +8,57 @@ import net.minecraft.sounds.SoundEvent;
 import java.util.LinkedList;
 import java.util.Queue;
 
+/**
+ * Manages sequential playback and queuing of quest completion sound effects.
+ *
+ * <p>Prevents overlapping audio playback when multiple quests complete simultaneously by processing
+ * queued sounds sequentially with tick-based cooldown delays on the main client thread.
+ */
 public class SoundQueueManager {
 
-    // The queue that holds the sounds waiting to be played
+    /** First-in, first-out (FIFO) queue storing pending sound types waiting to be played. */
     private static final Queue<SoundType> QUEUE = new LinkedList<>();
 
-    // The cooldown timer in game ticks
+    /** Remaining cooldown duration in game ticks before the next queued sound can play. */
     private static int tickCooldown = 0;
 
-    // Defines our sounds and their respective cooldowns (Length + Padding)
+    /**
+     * Enumeration defining supported quest chime sound types and their required audio duration cooldowns.
+     */
     public enum SoundType {
-        DAILY(12),  // 600ms (12 ticks)
-        WEEKLY(24); // 1200ms (24 ticks)
+        /** Daily quest completion chime (12 ticks = 600 ms duration). */
+        DAILY(12),
+        /** Weekly or monthly quest completion chime (24 ticks = 1200 ms duration). */
+        WEEKLY(24);
 
+        /** Delay duration in client ticks required after playing this sound. */
         public final int cooldown;
 
+        /**
+         * Constructs a sound type definition with its associated cooldown duration.
+         *
+         * @param cooldown Cooldown length in client ticks (20 ticks = 1 second)
+         */
         SoundType(int cooldown) {
             this.cooldown = cooldown;
         }
     }
 
     /**
-     * Call this from your chat listener whenever a quest completes.
+     * Adds a quest completion sound request to the playback queue.
+     *
+     * <p>Call this method whenever a completed quest message is intercepted in chat.
+     *
+     * @param type The {@link SoundType} representing the quest tier completed
      */
     public static void enqueueSound(SoundType type) {
         QUEUE.add(type);
     }
 
     /**
-     * Registers the tick loop. Call this ONCE in your ClientModInitializer.
+     * Registers the end client tick listener with Fabric's lifecycle event system.
+     *
+     * <p>Must be called exactly once during client mod initialization.
      */
     public static void register() {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -55,6 +77,12 @@ public class SoundQueueManager {
         });
     }
 
+    /**
+     * Triggers centered UI playback for a specific sound type via Minecraft's SoundManager.
+     *
+     * @param client The Minecraft client instance
+     * @param type   The {@link SoundType} to play
+     */
     private static void playSound(Minecraft client, SoundType type) {
         SoundEvent soundEvent = (type == SoundType.WEEKLY)
                 ? QuestViewerClient.WEEKLY_CHIME_EVENT

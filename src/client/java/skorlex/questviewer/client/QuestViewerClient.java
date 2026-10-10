@@ -5,16 +5,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.blaze3d.platform.InputConstants;
-import com.mojang.brigadier.LiteralMessage;
-import com.mojang.brigadier.StringReader;
-import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
-import com.mojang.brigadier.context.CommandContext;
-import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
-import com.mojang.brigadier.suggestion.Suggestions;
-import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
@@ -34,13 +26,16 @@ import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
 import net.minecraft.sounds.SoundEvent;
+import net.minecraft.world.scores.DisplaySlot;
+import net.minecraft.world.scores.Objective;
 import skorlex.questviewer.QuestViewer;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.Arrays;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -48,68 +43,93 @@ import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Main client entrypoint for QuestViewer on Fabric (Minecraft 26.3).
+ *
+ * <p>Manages client initialization, keybind handling, custom sound registration,
+ * chat message interception, Brigadier client command trees with clean argument hints,
+ * and asynchronous HTTP requests to the Cloudflare Worker proxy.
+ */
 public class QuestViewerClient implements ClientModInitializer {
 
+	/** Identifier for the daily quest completion chime sound asset. */
 	public static final Identifier DAILY_CHIME_ID = Identifier.fromNamespaceAndPath(QuestViewer.MOD_ID, "chime_daily");
+	/** SoundEvent instance registered in Minecraft's registry for playing daily quest chimes. */
 	public static final SoundEvent DAILY_CHIME_EVENT = SoundEvent.createVariableRangeEvent(DAILY_CHIME_ID);
 
+	/** Identifier for the weekly quest completion chime sound asset. */
 	public static final Identifier WEEKLY_CHIME_ID = Identifier.fromNamespaceAndPath(QuestViewer.MOD_ID, "chime_weekly");
+	/** SoundEvent instance registered in Minecraft's registry for playing weekly quest chimes. */
 	public static final SoundEvent WEEKLY_CHIME_EVENT = SoundEvent.createVariableRangeEvent(WEEKLY_CHIME_ID);
 
+	/** Category in Minecraft Controls menu for QuestViewer key bindings. */
 	public static final KeyMapping.Category CATEGORY = KeyMapping.Category.register(
 			Identifier.fromNamespaceAndPath(QuestViewer.MOD_ID, "quests")
 	);
 
+	/** Key binding to trigger an instant check for current daily quests (Default: 'K'). */
 	public static KeyMapping checkQuestsKey = KeyMappingHelper.registerKeyMapping(
 			new KeyMapping(
 					"key.questviewer.check_daily_quests",
-					InputConstants.Type.KEYSYM,
+					InputConstants.Type.KEYBOARD,
 					InputConstants.KEY_K,
 					CATEGORY
 			)
 	);
 
+	/** Key binding to trigger an instant check for current weekly quests (Default: 'J'). */
 	public static KeyMapping checkWeeklyQuestsKey = KeyMappingHelper.registerKeyMapping(
 			new KeyMapping(
 					"key.questviewer.check_weekly_quests",
-					InputConstants.Type.KEYSYM,
+					InputConstants.Type.KEYBOARD,
 					InputConstants.KEY_J,
 					CATEGORY
 			)
 	);
 
+	/** Shared HTTP Client instance configured to automatically follow redirects. */
 	private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
 			.followRedirects(HttpClient.Redirect.ALWAYS)
 			.build();
 
+	/** Regex pattern used to intercept completed quest announcements in Hypixel chat. */
 	private static final Pattern QUEST_COMPLETED_PATTERN = Pattern.compile("(?s)^(Daily|Weekly|Monthly) Quest: .* Completed!.*");
 
-	// 60 ticks = exactly 3 seconds of in-game time
+	/** Delay in client ticks (60 ticks = 3 seconds) before showing the first-time welcome message. */
 	private static int welcomeDelay = 60;
 
+	/**
+	 * Client initialization method called by Fabric Loader when the game starts up.
+	 * Registers sounds, queues, tick listeners, chat interceptors, and client commands.
+	 */
 	@Override
 	public void onInitializeClient() {
+		// Load configuration settings from the local JSON config file
 		QuestViewerConfig.load();
 
+		// Register custom audio events into Minecraft's registry system
 		Registry.register(BuiltInRegistries.SOUND_EVENT, DAILY_CHIME_ID, DAILY_CHIME_EVENT);
 		Registry.register(BuiltInRegistries.SOUND_EVENT, WEEKLY_CHIME_ID, WEEKLY_CHIME_EVENT);
 
+		// Initialize the sound queue manager tick listener
 		SoundQueueManager.register();
 
+		// Register client tick event to handle welcome messages and keybind presses
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			// Send the welcome message 3 seconds after the player has fully loaded
+			// Display welcome tip 3 seconds after loading into a server for the first time
 			if (client.player != null && QuestViewerConfig.getInstance().firstTime) {
 				if (welcomeDelay > 0) {
 					welcomeDelay--;
 				} else {
 					client.player.sendSystemMessage(Component.literal("§e§lUsing §6§lQuestViewer§e§l for the first time? Type §6§l/q help§e§l to view the list of available commands!"));
 
-					// Disable the flag and save the config so this never triggers again
+					// Disable firstTime flag and persist change to disk
 					QuestViewerConfig.getInstance().firstTime = false;
 					QuestViewerConfig.save();
 				}
 			}
 
+			// Listen for 'K' keybind presses to view daily quests
 			while (checkQuestsKey.consumeClick()) {
 				if (client.player != null) {
 					String selfName = client.player.getName().getString();
@@ -117,6 +137,7 @@ public class QuestViewerClient implements ClientModInitializer {
 				}
 			}
 
+			// Listen for 'J' keybind presses to view weekly quests
 			while (checkWeeklyQuestsKey.consumeClick()) {
 				if (client.player != null) {
 					String selfName = client.player.getName().getString();
@@ -125,6 +146,7 @@ public class QuestViewerClient implements ClientModInitializer {
 			}
 		});
 
+		// Intercept incoming chat messages to trigger completion chime notification sounds
 		ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
 			if (!QuestViewerConfig.getInstance().notificationsEnabled || overlay) return;
 
@@ -134,6 +156,7 @@ public class QuestViewerClient implements ClientModInitializer {
 			if (matcher.matches()) {
 				String questType = matcher.group(1);
 
+				// Enqueue sound based on quest type (Daily vs Weekly/Monthly)
 				if (questType.equals("Daily")) {
 					SoundQueueManager.enqueueSound(SoundQueueManager.SoundType.DAILY);
 				} else {
@@ -142,6 +165,7 @@ public class QuestViewerClient implements ClientModInitializer {
 			}
 		});
 
+		// Register Fabric client-side command trees (/q, /quest, /quests)
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
 			String[] aliases = {"q", "quest", "quests"};
 			for (String alias : aliases) {
@@ -152,7 +176,7 @@ public class QuestViewerClient implements ClientModInitializer {
 							return 1;
 						});
 
-				// 1. NO ARGUMENTS: help, h, games, g (No ghost text)
+				// 1. NO ARGUMENTS: help, h, games, g (Shows no extra ghost text)
 				for (String sub : new String[]{"help", "h", "games", "g"}) {
 					baseCommand.then(ClientCommands.literal(sub)
 							.executes(context -> {
@@ -162,39 +186,49 @@ public class QuestViewerClient implements ClientModInitializer {
 					);
 				}
 
-				// 2. OPTIONAL IGN: summary, sum, stats, s, site (Shows [<ign>])
+				// 2. OPTIONAL IGN: summary, sum, stats, s, site (Cleanly shows [<ign>])
 				for (String sub : new String[]{"summary", "sum", "stats", "s", "site"}) {
 					baseCommand.then(ClientCommands.literal(sub)
 							.executes(context -> {
 								processArgs(Minecraft.getInstance(), new String[]{sub});
 								return 1;
 							})
-							.then(ClientCommands.argument("ign", StringArgumentType.word())
+							.then(ClientCommands.argument("ign", StringArgumentType.greedyString())
 									.executes(context -> {
-										processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "ign")});
+										String extra = StringArgumentType.getString(context, "ign").trim();
+										if (extra.isEmpty()) {
+											processArgs(Minecraft.getInstance(), new String[]{sub});
+										} else {
+											processArgs(Minecraft.getInstance(), new String[]{sub, extra});
+										}
 										return 1;
 									})
 							)
 					);
 				}
 
-				// 3. OPTIONAL PAGE: leaderboard, lb (Shows [<page>])
+				// 3. OPTIONAL PAGE: leaderboard, lb (Cleanly shows [<page>])
 				for (String sub : new String[]{"leaderboard", "lb"}) {
 					baseCommand.then(ClientCommands.literal(sub)
 							.executes(context -> {
 								processArgs(Minecraft.getInstance(), new String[]{sub});
 								return 1;
 							})
-							.then(ClientCommands.argument("page", StringArgumentType.word())
+							.then(ClientCommands.argument("page", StringArgumentType.greedyString())
 									.executes(context -> {
-										processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "page")});
+										String extra = StringArgumentType.getString(context, "page").trim();
+										if (extra.isEmpty()) {
+											processArgs(Minecraft.getInstance(), new String[]{sub});
+										} else {
+											processArgs(Minecraft.getInstance(), new String[]{sub, extra});
+										}
 										return 1;
 									})
 							)
 					);
 				}
 
-				// 4. NOTIFICATION: notification, n (Auto-suggests 'daily', 'd', 'weekly', 'w', 'monthly', 'm', 'toggle', 't')
+				// 4. NOTIFICATION: notification, n (Subcommand literals)
 				for (String sub : new String[]{"notification", "n"}) {
 					baseCommand.then(ClientCommands.literal(sub)
 							.executes(context -> {
@@ -252,41 +286,43 @@ public class QuestViewerClient implements ClientModInitializer {
 					);
 				}
 
-				// 5. OPTIONAL GAME & IGN: daily, d, weekly, w, monthly, m (Shows [<game>] [<ign>])
+				// 5. OPTIONAL GAME & IGN: daily, d, weekly, w, monthly, m (Cleanly shows [<game>])
 				for (String sub : new String[]{"daily", "d", "weekly", "w", "monthly", "m"}) {
 					baseCommand.then(ClientCommands.literal(sub)
 							.executes(context -> {
 								processArgs(Minecraft.getInstance(), new String[]{sub});
 								return 1;
 							})
-							.then(ClientCommands.argument("game", StringArgumentType.word())
+							.then(ClientCommands.argument("game", StringArgumentType.greedyString())
 									.executes(context -> {
-										processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "game")});
+										String extra = StringArgumentType.getString(context, "game").trim();
+										if (extra.isEmpty()) {
+											processArgs(Minecraft.getInstance(), new String[]{sub});
+										} else {
+											String[] split = extra.split("\\s+");
+											String[] full = new String[1 + split.length];
+											full[0] = sub;
+											System.arraycopy(split, 0, full, 1, split.length);
+											processArgs(Minecraft.getInstance(), full);
+										}
 										return 1;
 									})
-									.then(ClientCommands.argument("ign", StringArgumentType.word())
-											.executes(context -> {
-												processArgs(Minecraft.getInstance(), new String[]{sub, StringArgumentType.getString(context, "game"), StringArgumentType.getString(context, "ign")});
-												return 1;
-											})
-									)
 							)
 					);
 				}
-
-				// 6. CUSTOM HIDDEN PARSER (Handles easter eggs invisibly and turns fake input red)
-				baseCommand.then(ClientCommands.argument("arg", new SecretArgumentType())
-						.executes(context -> {
-							processArgs(Minecraft.getInstance(), new String[]{context.getArgument("arg", String.class)});
-							return 1;
-						})
-				);
 
 				dispatcher.register(baseCommand);
 			}
 		});
 	}
 
+	/**
+	 * Processes command arguments dispatched from Brigadier and routes them to appropriate handlers.
+	 * Executes safely on the main client thread.
+	 *
+	 * @param client Minecraft client instance
+	 * @param args   Command arguments array passed by the player
+	 */
 	private void processArgs(Minecraft client, String[] args) {
 		client.execute(() -> {
 			if (client.player == null) return;
@@ -437,10 +473,22 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	/**
+	 * Plays a UI sound effect at the configured pitch with maximum volume.
+	 *
+	 * @param client     Minecraft client instance
+	 * @param soundEvent Custom SoundEvent to trigger
+	 * @param pitch      Pitch multiplier from config
+	 */
 	private void playNotificationSound(Minecraft client, SoundEvent soundEvent, float pitch) {
 		client.getSoundManager().play(SimpleSoundInstance.forUI(soundEvent, pitch, 100.0F));
 	}
 
+	/**
+	 * Prints the interactive help menu formatted with Minecraft color codes and shortcuts.
+	 *
+	 * @param client Minecraft client instance
+	 */
 	private void printHelp(Minecraft client) {
 		client.player.sendSystemMessage(Component.literal("\n§m----------------------------------------\n"));
 		client.player.sendSystemMessage(Component.literal("§lHelp and Commands\n"));
@@ -460,10 +508,16 @@ public class QuestViewerClient implements ClientModInitializer {
 
 		String dKey = checkQuestsKey.getTranslatedKeyMessage().getString().toUpperCase();
 		String wKey = checkWeeklyQuestsKey.getTranslatedKeyMessage().getString().toUpperCase();
-		client.player.sendSystemMessage(Component.literal("\n§e§lTip: §7Press §b" + dKey + " §7(configurable) to view daily and §b" + wKey + " §7to view weekly quests!"));
+		client.player.sendSystemMessage(Component.literal("\n§e§lTip: §7Press §b" + dKey + " §7to view daily and §b" + wKey + " §7to view weekly quests! Both key binds are configurable in Controls."));
 		client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 	}
 
+	/**
+	 * Resolves a player's UUID via PlayerDB and prints a clickable chat link to their 25Karma quests page.
+	 *
+	 * @param client Minecraft client instance
+	 * @param ign    Target player's Minecraft username
+	 */
 	private void printSite(Minecraft client, String ign) {
 		CompletableFuture.runAsync(() -> {
 			try {
@@ -511,6 +565,11 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	/**
+	 * Prints an Easter egg link to Summer Albert's archive website in chat.
+	 *
+	 * @param client Minecraft client instance
+	 */
 	private void printAlbert(Minecraft client) {
 		String url = "https://sites.google.com/view/summeralbert/home";
 
@@ -529,6 +588,11 @@ public class QuestViewerClient implements ClientModInitializer {
 		client.player.sendSystemMessage(Component.literal("\n§m-------------------"));
 	}
 
+	/**
+	 * Asynchronously fetches all supported game mode aliases from the proxy and displays them in chat.
+	 *
+	 * @param client Minecraft client instance
+	 */
 	private void fetchGames(Minecraft client) {
 		CompletableFuture.runAsync(() -> {
 			try {
@@ -561,7 +625,7 @@ public class QuestViewerClient implements ClientModInitializer {
 						}
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 					} else if (data != null && data.has("cause")) {
-						client.player.sendSystemMessage(Component.literal("§cError: " + data.get("cause").getAsString()));
+						client.player.sendSystemMessage(Component.literal("§c" + data.get("cause").getAsString()));
 					} else {
 						client.player.sendSystemMessage(Component.literal("§cAn error has occurred"));
 					}
@@ -572,8 +636,18 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	/**
+	 * Scrapes and displays 10 players per page from Plancke's overall completed quests leaderboard.
+	 * Includes interactive '<<' and '>>' pagination buttons.
+	 *
+	 * @param client        Minecraft client instance
+	 * @param requestedPage Target page number (1 through 10)
+	 */
 	private void fetchLeaderboard(Minecraft client, int requestedPage) {
 		final int page = Math.max(1, Math.min(requestedPage, 10));
+		final int pageSize = 10;
+		final int minRank = (page - 1) * pageSize + 1;
+		final int maxRank = page * pageSize;
 
 		CompletableFuture.runAsync(() -> {
 			try {
@@ -595,6 +669,7 @@ public class QuestViewerClient implements ClientModInitializer {
 
 					MutableComponent header = Component.literal("");
 
+					// Render left arrow button for previous page
 					if (page > 1) {
 						header.append(Component.literal("§b§l<< ")
 								.withStyle(style -> style
@@ -604,8 +679,9 @@ public class QuestViewerClient implements ClientModInitializer {
 						);
 					}
 
-					header.append(Component.literal("§f§lTop " + (page * 10) + " Quests Completed"));
+					header.append(Component.literal("§f§lLeaderboard §7(Page " + page + "/10)"));
 
+					// Render right arrow button for next page
 					if (page < 10) {
 						header.append(Component.literal(" §b§l>>")
 								.withStyle(style -> style
@@ -616,24 +692,20 @@ public class QuestViewerClient implements ClientModInitializer {
 					}
 
 					client.player.sendSystemMessage(header);
-					client.player.sendSystemMessage(Component.literal("\n§m----------------------------------------"));
+					client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 
 					Pattern rowPattern = Pattern.compile("(?s)<tr>\\s*<td>(\\d+)</td>\\s*<td>(.*?)</td>\\s*<td>([\\d,]+)</td>");
 					Matcher matcher = rowPattern.matcher(html);
 
 					int currentRank = 0;
-					int startIndex = (page - 1) * 10;
-					int endIndex = page * 10;
 					boolean foundAny = false;
 
 					while (matcher.find()) {
 						currentRank++;
 
-						if (currentRank <= startIndex) {
+						// Filter output down to exactly 10 players for the current page
+						if (currentRank < minRank || currentRank > maxRank) {
 							continue;
-						}
-						if (currentRank > endIndex) {
-							break;
 						}
 
 						foundAny = true;
@@ -686,6 +758,12 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	/**
+	 * Converts a raw Hex color code string into its corresponding Minecraft formatting code (§).
+	 *
+	 * @param hex Hexadecimal color string (e.g., "#FF5555")
+	 * @return Minecraft formatting code prefix string (e.g., "§c")
+	 */
 	private String hexToMinecraftColor(String hex) {
 		switch (hex) {
 			case "#0000AA": return "§1";
@@ -707,6 +785,13 @@ public class QuestViewerClient implements ClientModInitializer {
 		}
 	}
 
+	/**
+	 * Asynchronously requests a player's general Hypixel stats (Level, AP, Karma, Quests, Challenges)
+	 * from the Cloudflare Proxy and formats the output into chat.
+	 *
+	 * @param client Minecraft client instance
+	 * @param name   Target player username
+	 */
 	private void fetchStats(Minecraft client, String name) {
 		CompletableFuture.runAsync(() -> {
 			try {
@@ -725,6 +810,11 @@ public class QuestViewerClient implements ClientModInitializer {
 
 					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
 						JsonObject payload = data.getAsJsonObject("data");
+
+						String fallbackNotice = null;
+						if (payload.has("fallbackNotice") && !payload.get("fallbackNotice").isJsonNull()) {
+							fallbackNotice = payload.get("fallbackNotice").getAsString();
+						}
 
 						String rankFormatted = payload.get("rankFormatted").getAsString();
 						double level = payload.get("level").getAsDouble();
@@ -745,10 +835,10 @@ public class QuestViewerClient implements ClientModInitializer {
 						client.player.sendSystemMessage(Component.literal("§7Challenges Completed: §b" + String.format(Locale.US, "%,d", challenges)));
 						client.player.sendSystemMessage(Component.literal("§7Karma: §d" + String.format(Locale.US, "%,d", karma)));
 
-						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+						printFooter(client, "§m----------------------------------------", fallbackNotice);
 
 					} else if (data != null && data.has("cause")) {
-						client.player.sendSystemMessage(Component.literal("§cError: " + data.get("cause").getAsString()));
+						client.player.sendSystemMessage(Component.literal("§c" + data.get("cause").getAsString()));
 					} else {
 						client.player.sendSystemMessage(Component.literal("§cError: Could not display stats"));
 					}
@@ -756,7 +846,7 @@ public class QuestViewerClient implements ClientModInitializer {
 			} catch (Exception e) {
 				client.execute(() -> {
 					if (client.player != null) {
-						client.player.sendSystemMessage(Component.literal("§cError: Could not fetch stats from proxy."));
+						client.player.sendSystemMessage(Component.literal("§cRequest failed: " + e.getMessage()));
 					}
 				});
 				QuestViewer.LOGGER.error("Failed to fetch stats from Cloudflare Proxy", e);
@@ -764,9 +854,17 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	/**
+	 * Asynchronously requests a player's quest summary statistics (Dailies today, Weeklies this week,
+	 * total completed this week/month/year/overall) from the Cloudflare Proxy.
+	 *
+	 * @param client Minecraft client instance
+	 * @param ign    Target player username
+	 */
 	private void fetchSummary(Minecraft client, String ign) {
 		CompletableFuture.runAsync(() -> {
 			try {
+				// Updated endpoint URL to match Worker route path /api/quests/summary/<player>
 				String url = "https://questviewer-proxy.skorlex.workers.dev/api/quests/summary/" + ign;
 				HttpRequest request = HttpRequest.newBuilder()
 						.uri(URI.create(url))
@@ -782,6 +880,12 @@ public class QuestViewerClient implements ClientModInitializer {
 
 					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
 						JsonObject payload = data.getAsJsonObject("data");
+
+						String fallbackNotice = null;
+						if (payload.has("fallbackNotice") && !payload.get("fallbackNotice").isJsonNull()) {
+							fallbackNotice = payload.get("fallbackNotice").getAsString();
+						}
+
 						String player = payload.get("player").getAsString();
 
 						String rankFormatted = payload.has("rankFormatted") ? payload.get("rankFormatted").getAsString() : "§7" + player;
@@ -806,10 +910,11 @@ public class QuestViewerClient implements ClientModInitializer {
 						client.player.sendSystemMessage(Component.literal("§7This Week: §b" + String.format(Locale.US, "%,d", completedThisWeek) + " §7Quests"));
 						client.player.sendSystemMessage(Component.literal("§7This Month: §b" + String.format(Locale.US, "%,d", completedThisMonth) + " §7Quests"));
 						client.player.sendSystemMessage(Component.literal("§7This Year: §b" + String.format(Locale.US, "%,d", completedThisYear) + " §7Quests"));
-						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+
+						printFooter(client, "§m----------------------------------------", fallbackNotice);
 
 					} else if (data != null && data.has("cause")) {
-						client.player.sendSystemMessage(Component.literal("§cError: " + data.get("cause").getAsString()));
+						client.player.sendSystemMessage(Component.literal("§c" + data.get("cause").getAsString()));
 					} else {
 						client.player.sendSystemMessage(Component.literal("§cError: Could not display summary"));
 					}
@@ -817,7 +922,7 @@ public class QuestViewerClient implements ClientModInitializer {
 			} catch (Exception e) {
 				client.execute(() -> {
 					if (client.player != null) {
-						client.player.sendSystemMessage(Component.literal("§cError: Could not display summary"));
+						client.player.sendSystemMessage(Component.literal("§cRequest failed: " + e.getMessage()));
 					}
 				});
 				QuestViewer.LOGGER.error("Failed to fetch summary from Cloudflare Proxy", e);
@@ -825,10 +930,33 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	/**
+	 * Asynchronously requests active/completed quest objectives for a specific game and player from the proxy.
+	 * Includes thread-safe scoreboard sidebar fallback resolution on the main client thread.
+	 *
+	 * @param client Minecraft client instance
+	 * @param ign    Target player username
+	 * @param game   Game alias or "current" to detect active lobby
+	 * @param type   Quest reset cycle ("daily", "weekly", or "monthly")
+	 */
 	private void fetchData(Minecraft client, String ign, String game, String type) {
+		// Read scoreboard sidebar title safely on the main render thread before starting async network tasks
+		String fallbackGame = "";
+		if (game.equalsIgnoreCase("current") && client.level != null && client.level.getScoreboard() != null) {
+			Objective objective = client.level.getScoreboard().getDisplayObjective(DisplaySlot.SIDEBAR);
+			if (objective != null) {
+				fallbackGame = ChatFormatting.stripFormatting(objective.getDisplayName().getString());
+			}
+		}
+		final String finalFallbackGame = fallbackGame;
+
 		CompletableFuture.runAsync(() -> {
 			try {
 				String url = "https://questviewer-proxy.skorlex.workers.dev/api/quests/player_simple/" + ign + "?type=" + type + "&game=" + game;
+				if (!finalFallbackGame.isEmpty()) {
+					url += "&fallback_game=" + URLEncoder.encode(finalFallbackGame, StandardCharsets.UTF_8.toString());
+				}
+
 				HttpRequest request = HttpRequest.newBuilder()
 						.uri(URI.create(url))
 						.header("content-type", "application/json")
@@ -842,7 +970,14 @@ public class QuestViewerClient implements ClientModInitializer {
 					if (client.player == null) return;
 
 					if (data != null && data.has("success") && data.get("success").getAsBoolean()) {
-						JsonObject questsRoot = data.get("data").getAsJsonObject().get("quests").getAsJsonObject();
+						JsonObject payload = data.get("data").getAsJsonObject();
+
+						String fallbackNotice = null;
+						if (payload.has("fallbackNotice") && !payload.get("fallbackNotice").isJsonNull()) {
+							fallbackNotice = payload.get("fallbackNotice").getAsString();
+						}
+
+						JsonObject questsRoot = payload.get("quests").getAsJsonObject();
 						JsonObject typeObject = questsRoot.get(type).getAsJsonObject();
 
 						if (typeObject.entrySet().isEmpty()) {
@@ -868,6 +1003,7 @@ public class QuestViewerClient implements ClientModInitializer {
 							titleType = "Daily";
 						}
 
+						// Special selection menu for Classic / Legacy Games hub
 						if (gameName.equalsIgnoreCase("Classic Games") || gameName.equalsIgnoreCase("Legacy")) {
 							client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 							client.player.sendSystemMessage(Component.literal("§eWhich game's " + type + " quests would you like to view?\n"));
@@ -881,7 +1017,7 @@ public class QuestViewerClient implements ClientModInitializer {
 							sendClickableGame(client, "The Walls", "/q " + cmdType + " walls " + targetPlayer);
 							sendClickableGame(client, "Paintball", "/q " + cmdType + " paintball " + targetPlayer);
 
-							client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
+							printFooter(client, "§m----------------------------------------", fallbackNotice);
 							return;
 						}
 
@@ -893,6 +1029,7 @@ public class QuestViewerClient implements ClientModInitializer {
 							} else {
 								client.player.sendSystemMessage(Component.literal("§c" + gameName + " doesn't have any quests!"));
 							}
+
 							return;
 						}
 
@@ -900,6 +1037,7 @@ public class QuestViewerClient implements ClientModInitializer {
 						client.player.sendSystemMessage(Component.literal("§l" + gameName));
 						client.player.sendSystemMessage(Component.literal("§f" + titleType + " Quests\n"));
 
+						// Format and display each quest objective with progress color coding
 						for (JsonElement quest : questList) {
 							JsonObject questObj = quest.getAsJsonObject();
 							JsonObject statusObject = questObj.get("status").getAsJsonObject();
@@ -912,6 +1050,7 @@ public class QuestViewerClient implements ClientModInitializer {
 								int progress = obj.get("progress").getAsInt();
 								int goal = obj.get("goal").getAsInt();
 
+								// Color coding: Green = Done, Yellow = In Progress, Red = Not Started
 								String color;
 								if (progress >= goal) {
 									color = "§a";
@@ -934,10 +1073,11 @@ public class QuestViewerClient implements ClientModInitializer {
 								client.player.sendSystemMessage(Component.literal(color + progress + "/" + goal));
 							}
 						}
-						client.player.sendSystemMessage(Component.literal("§m-------------------"));
+
+						printFooter(client, "§m-------------------", fallbackNotice);
 
 					} else if (data != null && data.has("cause")) {
-						client.player.sendSystemMessage(Component.literal("§cError: " + data.get("cause").getAsString()));
+						client.player.sendSystemMessage(Component.literal("§c" + data.get("cause").getAsString()));
 					} else {
 						client.player.sendSystemMessage(Component.literal("§cError: Could not display quests"));
 					}
@@ -945,7 +1085,7 @@ public class QuestViewerClient implements ClientModInitializer {
 			} catch (Exception e) {
 				client.execute(() -> {
 					if (client.player != null) {
-						client.player.sendSystemMessage(Component.literal("§cError: Could not display quests"));
+						client.player.sendSystemMessage(Component.literal("§cRequest failed: " + e.getMessage()));
 					}
 				});
 				QuestViewer.LOGGER.error("Failed to fetch quests from Cloudflare Proxy", e);
@@ -953,6 +1093,13 @@ public class QuestViewerClient implements ClientModInitializer {
 		});
 	}
 
+	/**
+	 * Prints a clickable text component that executes a command when clicked by the user.
+	 *
+	 * @param client  Minecraft client instance
+	 * @param name    Display game title
+	 * @param command Command string to run upon clicking
+	 */
 	private void sendClickableGame(Minecraft client, String name, String command) {
 		MutableComponent comp = Component.literal("§7- §b§l" + name)
 				.withStyle(style -> style
@@ -963,33 +1110,26 @@ public class QuestViewerClient implements ClientModInitializer {
 	}
 
 	/**
-	 * Custom Argument Type specifically designed to handle easter eggs.
-	 * It hides them from the suggestion list, but forces fake commands (like '/q hello') to turn red!
+	 * Prints the standard footer line and appends a dark gray italic fallback cache notice if present.
+	 *
+	 * @param client         Minecraft client instance
+	 * @param lineType       Divider line pattern string
+	 * @param fallbackNotice Cache age notification string from proxy (or null)
 	 */
-	private static class SecretArgumentType implements ArgumentType<String> {
-		private static final List<String> SECRETS = Arrays.asList("bert", "albert", "summer_albert");
-		private static final SimpleCommandExceptionType EXCEPTION = new SimpleCommandExceptionType(new LiteralMessage("Unknown command"));
+	private void printFooter(Minecraft client, String lineType, String fallbackNotice) {
+		client.player.sendSystemMessage(Component.literal(lineType));
 
-		@Override
-		public String parse(StringReader reader) throws CommandSyntaxException {
-			int start = reader.getCursor();
-			String word = reader.readUnquotedString();
+		if (fallbackNotice != null) {
+			String cleanNotice = fallbackNotice.replace("§7", "");
 
-			// If the word matches our easter eggs, approve it silently!
-			if (SECRETS.contains(word)) {
-				return word;
-			}
-
-			// If it is NOT an easter egg, we crash the parser right here.
-			// This forces Minecraft to highlight the word in red and kills the ghost text.
-			reader.setCursor(start);
-			throw EXCEPTION.createWithContext(reader);
-		}
-
-		@Override
-		public <S> CompletableFuture<Suggestions> listSuggestions(CommandContext<S> context, SuggestionsBuilder builder) {
-			// Send an empty list to keep the easter eggs completely invisible in the autocomplete UI
-			return builder.buildFuture();
+			MutableComponent hoverText = Component.literal("§eHypixel API limit reached.\n§7Displaying the most recent saved data.");
+			MutableComponent noticeComp = Component.literal(cleanNotice)
+					.withStyle(style -> style
+							.withColor(ChatFormatting.DARK_GRAY)
+							.withItalic(true)
+							.withHoverEvent(new HoverEvent.ShowText(hoverText))
+					);
+			client.player.sendSystemMessage(noticeComp);
 		}
 	}
 }
