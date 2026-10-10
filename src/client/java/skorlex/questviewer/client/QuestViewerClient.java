@@ -36,6 +36,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -51,6 +54,9 @@ import java.util.regex.Pattern;
  * and asynchronous HTTP requests to the Cloudflare Worker proxy.
  */
 public class QuestViewerClient implements ClientModInitializer {
+
+	/** Formatter for displaying exact reset timestamps in player's local system timezone. */
+	private static final DateTimeFormatter RESET_TIME_FORMATTER = DateTimeFormatter.ofPattern("EEE, MMM d, h:mm a", Locale.US);
 
 	/** Identifier for the daily quest completion chime sound asset. */
 	public static final Identifier DAILY_CHIME_ID = Identifier.fromNamespaceAndPath(QuestViewer.MOD_ID, "chime_daily");
@@ -786,6 +792,18 @@ public class QuestViewerClient implements ClientModInitializer {
 	}
 
 	/**
+	 * Formats an epoch millisecond timestamp into a human-readable local time string.
+	 *
+	 * @param timestamp Epoch milliseconds timestamp
+	 * @return Formatted date string (e.g., "Sun, Oct 11, 6:00 AM")
+	 */
+	private String formatLocalResetTime(long timestamp) {
+		return Instant.ofEpochMilli(timestamp)
+				.atZone(ZoneId.systemDefault())
+				.format(RESET_TIME_FORMATTER);
+	}
+
+	/**
 	 * Asynchronously requests a player's general Hypixel stats (Level, AP, Karma, Quests, Challenges)
 	 * from the Cloudflare Proxy and formats the output into chat.
 	 *
@@ -856,7 +874,8 @@ public class QuestViewerClient implements ClientModInitializer {
 
 	/**
 	 * Asynchronously requests a player's quest summary statistics (Dailies today, Weeklies this week,
-	 * total completed this week/month/year/overall) from the Cloudflare Proxy.
+	 * total completed this week/month/year/overall, and cycle reset timers with local time hover tooltips)
+	 * from the Cloudflare Proxy.
 	 *
 	 * @param client Minecraft client instance
 	 * @param ign    Target player username
@@ -864,7 +883,6 @@ public class QuestViewerClient implements ClientModInitializer {
 	private void fetchSummary(Minecraft client, String ign) {
 		CompletableFuture.runAsync(() -> {
 			try {
-				// Updated endpoint URL to match Worker route path /api/quests/summary/<player>
 				String url = "https://questviewer-proxy.skorlex.workers.dev/api/quests/summary/" + ign;
 				HttpRequest request = HttpRequest.newBuilder()
 						.uri(URI.create(url))
@@ -887,7 +905,6 @@ public class QuestViewerClient implements ClientModInitializer {
 						}
 
 						String player = payload.get("player").getAsString();
-
 						String rankFormatted = payload.has("rankFormatted") ? payload.get("rankFormatted").getAsString() : "§7" + player;
 
 						int dailiesToday = payload.get("dailiesToday").getAsInt();
@@ -898,18 +915,60 @@ public class QuestViewerClient implements ClientModInitializer {
 						int completedThisMonth = payload.get("completedThisMonth").getAsInt();
 						int completedThisYear = payload.get("completedThisYear").getAsInt();
 
+						// Parse reset countdowns and timestamps
+						String dailiesResetIn = payload.has("dailiesResetIn") && !payload.get("dailiesResetIn").isJsonNull()
+								? payload.get("dailiesResetIn").getAsString() : null;
+						long dailiesResetTimestamp = payload.has("dailiesResetTimestamp") && !payload.get("dailiesResetTimestamp").isJsonNull()
+								? payload.get("dailiesResetTimestamp").getAsLong() : 0;
+
+						String weekliesResetIn = payload.has("weekliesResetIn") && !payload.get("weekliesResetIn").isJsonNull()
+								? payload.get("weekliesResetIn").getAsString() : null;
+						long weekliesResetTimestamp = payload.has("weekliesResetTimestamp") && !payload.get("weekliesResetTimestamp").isJsonNull()
+								? payload.get("weekliesResetTimestamp").getAsLong() : 0;
+
+						int overallCompleted = payload.has("overallCompleted") && !payload.get("overallCompleted").isJsonNull()
+								? payload.get("overallCompleted").getAsInt() : 0;
+
 						String summarySuffix = rankFormatted.toLowerCase().endsWith("s") ? "'" : "'s";
 
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------\n"));
 						client.player.sendSystemMessage(Component.literal(rankFormatted + summarySuffix + " §f§lQuest Summary\n"));
 						client.player.sendSystemMessage(Component.literal("§m----------------------------------------"));
 						client.player.sendSystemMessage(Component.literal("§6§lCurrent Cycle:"));
-						client.player.sendSystemMessage(Component.literal("§7Dailies Today: §a" + dailiesToday + " / " + totalDailies + " §7Completed"));
-						client.player.sendSystemMessage(Component.literal("§7Weeklies This Week: §a" + weekliesThisWeek + " / " + totalWeeklies + " §7Completed"));
+
+						// Build Daily quest completion line with hover tooltip for exact local reset time
+						MutableComponent dailyLine = Component.literal("§7Dailies Today: §a" + dailiesToday + " / " + totalDailies + " §7Completed");
+						if (dailiesResetIn != null) {
+							MutableComponent resetComp = Component.literal(" §8§o(Resets in " + dailiesResetIn + ")");
+							if (dailiesResetTimestamp > 0) {
+								String localResetTime = formatLocalResetTime(dailiesResetTimestamp);
+								Component hoverText = Component.literal("§eExact Reset (Local Time):\n§7" + localResetTime);
+								resetComp.withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(hoverText)));
+							}
+							dailyLine.append(resetComp);
+						}
+						client.player.sendSystemMessage(dailyLine);
+
+						// Build Weekly quest completion line with hover tooltip for exact local reset time
+						MutableComponent weeklyLine = Component.literal("§7Weeklies This Week: §a" + weekliesThisWeek + " / " + totalWeeklies + " §7Completed");
+						if (weekliesResetIn != null) {
+							MutableComponent resetComp = Component.literal(" §8§o(Resets in " + weekliesResetIn + ")");
+							if (weekliesResetTimestamp > 0) {
+								String localResetTime = formatLocalResetTime(weekliesResetTimestamp);
+								Component hoverText = Component.literal("§eExact Reset (Local Time):\n§7" + localResetTime);
+								resetComp.withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(hoverText)));
+							}
+							weeklyLine.append(resetComp);
+						}
+						client.player.sendSystemMessage(weeklyLine);
+
 						client.player.sendSystemMessage(Component.literal("\n§6§lTotal Completed:"));
 						client.player.sendSystemMessage(Component.literal("§7This Week: §b" + String.format(Locale.US, "%,d", completedThisWeek) + " §7Quests"));
 						client.player.sendSystemMessage(Component.literal("§7This Month: §b" + String.format(Locale.US, "%,d", completedThisMonth) + " §7Quests"));
 						client.player.sendSystemMessage(Component.literal("§7This Year: §b" + String.format(Locale.US, "%,d", completedThisYear) + " §7Quests"));
+						if (payload.has("overallCompleted")) {
+							client.player.sendSystemMessage(Component.literal("§7Overall: §b" + String.format(Locale.US, "%,d", overallCompleted) + " §7Quests"));
+						}
 
 						printFooter(client, "§m----------------------------------------", fallbackNotice);
 
